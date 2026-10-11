@@ -1,0 +1,15 @@
+# secrets — never commit
+.secrets/
+*.secrets
+
+# internal working notes (contain local-system details)
+notes/
+
+# large artifacts: fetched on the Jetson, never in git
+models/
+results/
+docker/models/
+
+# python
+__pycache__/
+*.pyc
