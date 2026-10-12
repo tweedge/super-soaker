@@ -1,0 +1,19 @@
+[Unit]
+Description=super-soaker 1/3 STT: wyoming-whisper-tiny (Wyoming tcp/10300)
+After=network-online.target super-soaker-clocks.service
+Wants=network-online.target
+# Fit-all-in-RAM policy: service pages must never hit swap.
+[Service]
+Type=simple
+User=super-soaker
+Group=super-soaker
+EnvironmentFile=-/etc/super-soaker/stt.env
+ExecStart=/opt/super-soaker/services/1-stt-wyoming-whisper-tiny/serve.sh
+Restart=always
+RestartSec=5
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

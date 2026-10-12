@@ -1,17 +1,16 @@
 #!/bin/bash
-# Fetch GGUF weights from Hugging Face into MODELS_DIR (data cache used as
-# the Docker build context). Run once on the Jetson before build-runtime.
+# Fetch extra GGUF weights from Hugging Face for bench sweep matrices.
+# (bootstrap.sh already fetches the default serving pair; this is for the
+# additional quant/drafter variants used by bench/matrix.sh.)
 #
 # Usage:
-#   ./scripts/fetch-models.sh                          # default pair
-#   ./scripts/fetch-models.sh LFM2.5-2.6B-Q5_K_M.gguf  # any official file
+#   ./scripts/fetch-models.sh LFM2.5-2.6B-Q5_K_M.gguf LFM2.5-2.6B-DSpark-F16.gguf
 #
 # Files resolve against LiquidAI/LFM2.5-2.6B-GGUF and
-# LiquidAI/LFM2.5-2.6B-DSpark-GGUF. Default: LFM2.5-2.6B-QAD-Q4_0.gguf
-# (target) + LFM2.5-2.6B-DSpark-Q8_0.gguf (drafter).
+# LiquidAI/LFM2.5-2.6B-DSpark-GGUF into MODELS_DIR.
 set -euo pipefail
 
-MODELS_DIR="${MODELS_DIR:-$HOME/.cache/super-soaker/models}"
+MODELS_DIR="${MODELS_DIR:-/var/lib/super-soaker/models}"
 BASE="https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main"
 DSB="https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark-GGUF/resolve/main"
 

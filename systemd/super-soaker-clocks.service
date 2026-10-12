@@ -1,0 +1,15 @@
+[Unit]
+Description=super-soaker power lock: nvpmodel MAXN_SUPER + jetson_clocks
+# No After=multi-user.target here: the three super-soaker services order
+# After= this unit while multi-user.target wants both, which would form an
+# ordering cycle (systemd then deletes the service jobs at boot).
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/super-soaker/deps/lock-clocks.sh
+ExecStop=/bin/true
+
+[Install]
+WantedBy=multi-user.target

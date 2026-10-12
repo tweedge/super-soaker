@@ -1,0 +1,18 @@
+[Unit]
+Description=super-soaker 2/3 LLM: llama.cpp LFM2.5-2.6B QAD + DSpark draft (HTTP tcp/8080)
+After=network-online.target super-soaker-clocks.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=super-soaker
+Group=super-soaker
+EnvironmentFile=-/etc/super-soaker/llm.env
+ExecStart=/opt/super-soaker/services/2-llm-llama.cpp-lfm2.5-2.6b/serve.sh
+Restart=always
+RestartSec=5
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

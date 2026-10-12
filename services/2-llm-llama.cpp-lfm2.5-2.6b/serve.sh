@@ -1,14 +1,15 @@
 #!/bin/bash
-# super-soaker entrypoint: configure + launch llama-server, self-test, serve.
+# super-soaker LLM service (native): configure + launch llama-server, self-test, serve.
+# Model: LiquidAI LFM2.5-2.6B (QAD-Q4_0) + DSpark-Q8_0 speculative drafter.
 set -uo pipefail
 
-log() { echo "[super-soaker] $*"; }
+log() { echo "[super-soaker-llm] $*"; }
 
 # ---- configuration (env) ----------------------------------------------------
 PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
-MODEL_PATH="${MODEL_PATH:-/models/LFM2.5-2.6B-Q4_K_M.gguf}"
-DRAFT_PATH="${DRAFT_PATH:-/models/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
+MODEL_PATH="${MODEL_PATH:-/var/lib/super-soaker/models/LFM2.5-2.6B-QAD-Q4_0.gguf}"
+DRAFT_PATH="${DRAFT_PATH:-/var/lib/super-soaker/models/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
 SPEC="${SPEC:-auto}"              # auto|on|off
 CTX="${CTX:-32768}"
 THREADS="${THREADS:-$(nproc)}"
@@ -23,10 +24,14 @@ API_KEY="${API_KEY:-}"
 API_KEY_FILE="${API_KEY_FILE:-}"
 SELF_TEST="${SELF_TEST:-on}"
 SELF_TEST_STRICT="${SELF_TEST_STRICT:-off}"
-JETSON_CLOCKS="${JETSON_CLOCKS:-off}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-}"
+LLAMA_BIN="${LLAMA_BIN:-/opt/super-soaker/llama.cpp/bin/llama-server}"
+SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-lfm2.5-2.6b/selftest.py}"
 
+if [ ! -x "$LLAMA_BIN" ]; then
+    log "ERROR: llama-server not found: $LLAMA_BIN"; exit 1
+fi
 if [ ! -f "$MODEL_PATH" ]; then
     log "ERROR: model not found: $MODEL_PATH"; exit 1
 fi
@@ -35,18 +40,8 @@ if [ -n "$API_KEY_FILE" ] && [ -f "$API_KEY_FILE" ]; then
     API_KEY="$(cat "$API_KEY_FILE")"
 fi
 
-# Optional: lock clocks for stable max performance (needs privileged container
-# or host-side `jetson_clocks`). Best-effort inside the container.
-if [ "$JETSON_CLOCKS" = "on" ]; then
-    if jetson_clocks >/dev/null 2>&1; then
-        log "jetson_clocks applied"
-    else
-        log "jetson_clocks not available in container (run it on the host for max perf)"
-    fi
-fi
-
 # ---- assemble llama-server command -----------------------------------------
-CMD=(llama-server
+CMD=("$LLAMA_BIN"
     -m "$MODEL_PATH"
     -ngl 99
     -c "$CTX"
@@ -128,8 +123,8 @@ done
 # ---- self-test --------------------------------------------------------------
 if [ "$SELF_TEST" = "on" ]; then
     log "running end-to-end self-test..."
-    if python3 /app/selftest.py --base-url "http://127.0.0.1:${PORT}" \
-            --model "$ALIAS" --out /tmp/selftest.json; then
+    if python3 "$SELFTEST" --base-url "http://127.0.0.1:${PORT}" \
+            --model "$ALIAS" --out /tmp/super-soaker-llm-selftest.json; then
         log "self-test PASSED"
     else
         log "self-test FAILED"

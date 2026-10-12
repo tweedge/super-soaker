@@ -1,0 +1,18 @@
+[Unit]
+Description=super-soaker 3/3 TTS: wyoming-kokoro-82M (Wyoming tcp/10210)
+After=network-online.target super-soaker-clocks.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=super-soaker
+Group=super-soaker
+EnvironmentFile=-/etc/super-soaker/tts.env
+ExecStart=/opt/super-soaker/services/3-tts-wyoming-kokoro-82m/serve.sh
+Restart=always
+RestartSec=5
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
