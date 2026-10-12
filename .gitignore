@@ -7,7 +7,7 @@ notes/
 
 # large artifacts: fetched on the Jetson, never in git
 models/
-results/
+/results/
 docker/models/
 
 # python

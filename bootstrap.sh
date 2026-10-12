@@ -17,6 +17,8 @@
 #   --no-reboot    do not reboot at the end (services start anyway)
 #   --force-jobs   allow JOBS>2 (dangerous on 8 GB devices — see below)
 #
+#   --model {lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning}   default lfm2.5-1.2b-chat
+#
 # Build parallelism is RAM-critical: the compilers (especially nvcc for ONNX
 # Runtime) peak at several GB per thread on an 8 GB Orin Nano Super. JOBS=1 is
 # the safe default and the build takes a WHILE (1-2 h); JOBS=2 is the tested
@@ -39,14 +41,26 @@ SERVICE_USER="super-soaker"
 SKIP_BUILD=0
 DO_REBOOT=1
 FORCE_JOBS=0
-for arg in "$@"; do
-    case "$arg" in
+LLM_MODEL=""
+while [ $# -gt 0 ]; do
+    case "$1" in
         --skip-build)  SKIP_BUILD=1 ;;
         --no-reboot)   DO_REBOOT=0 ;;
         --force-jobs)  FORCE_JOBS=1 ;;
-        *) echo "unknown argument: $arg" >&2; exit 2 ;;
+        --model)       if [ $# -lt 2 ]; then
+                           echo "--model requires a value: lfm2.5-1.2b-chat or lfm2.5-2.6b-reasoning" >&2
+                           exit 2
+                       fi
+                       LLM_MODEL="$2"; shift ;;
+        --model=*)     LLM_MODEL="${1#--model=}" ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
+    shift
 done
+case "$LLM_MODEL" in
+    ""|lfm2.5-2.6b-reasoning|lfm2.5-1.2b-chat) ;;
+    *) die "unknown --model '$LLM_MODEL' (lfm2.5-2.6b-reasoning | lfm2.5-1.2b-chat)" ;;
+esac
 
 # 1 compile thread by default; >2 needs --force-jobs (deps/limit-jobs.sh).
 JOBS="${JOBS:-1}"
@@ -181,12 +195,26 @@ fetch() {
     mv "${dest}.part" "${dest}"
 }
 
-fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-QAD-Q4_0.gguf" \
-      "${MODEL_DIR}/LFM2.5-2.6B-QAD-Q4_0.gguf" \
-      "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"
-fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark-GGUF/resolve/main/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
-      "${MODEL_DIR}/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
-      "85a98fafdaf1328b6876fd1360d7ed69e74c6cefc14dd07fb6306e1940386c87"
+case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
+  lfm2.5-2.6b-reasoning)
+    log "  LLM: LFM2.5-2.6B (agentic reasoning profile)"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
+          "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-DSpark-GGUF/resolve/main/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
+          "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"
+    ;;
+  *)
+    log "  LLM: LFM2.5-1.2B-Instruct (fast chat profile)"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-QAD-Q4_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-2.6B-QAD-Q4_0.gguf" \
+          "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark-GGUF/resolve/main/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
+          "85a98fafdaf1328b6876fd1360d7ed69e74c6cefc14dd07fb6306e1940386c87"
+    ;;
+esac
 fetch "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx" \
       "${TTS_DIR}/kokoro-v1.0.fp16.onnx" \
       "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204"
@@ -224,11 +252,24 @@ write_env() {
         echo "  wrote ${file}"
     fi
 }
-write_env /etc/super-soaker/llm.env \
+# llm.env reflects the chosen serving profile. If the file already exists
+# with a DIFFERENT LLM_MODEL and --model was passed explicitly, overwrite it
+# (that is the supported way to switch variants on an installed node).
+LLM_ENV=/etc/super-soaker/llm.env
+if [ -n "$LLM_MODEL" ] && [ -f "$LLM_ENV" ] && \
+   ! grep -q "^LLM_MODEL=$LLM_MODEL$" "$LLM_ENV"; then
+    echo "  switching LLM model to $LLM_MODEL: rewriting $LLM_ENV"
+    rm -f "$LLM_ENV"
+fi
+write_env "$LLM_ENV" \
     "# super-soaker LLM tuning (see notes/03-final-config.md)" \
-    "PORT=8080" "CTX=32768" "N_BATCH=1024" "UBATCH=256" "KV_TYPE=q8_0" \
-    "SPEC=auto" "REASONING_BUDGET=128" "CACHE_REUSE=256" "PRIO=2" \
-    "SELF_TEST=on"
+    "PORT=8080" "N_BATCH=1024" "UBATCH=256" "KV_TYPE=q8_0" \
+    "SPEC=auto" "CACHE_REUSE=256" "PRIO=2" \
+    "SELF_TEST=on" \
+    "LLM_MODEL=${LLM_MODEL:-lfm2.5-1.2b-chat}" \
+    "# per-model defaults (CTX, REASONING_BUDGET, model paths) are applied" \
+    "# from LLM_MODEL in serve.sh; override individually below if needed:" \
+    "#CTX=32768" "#REASONING_BUDGET=128"
 write_env /etc/super-soaker/stt.env \
     "# super-soaker STT tuning" \
     "PORT=10300" "MODEL=tiny" "LANGUAGE=en" "COMPUTE_TYPE=int8" "BEAM_SIZE=5" \

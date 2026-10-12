@@ -8,18 +8,13 @@ log() { echo "[super-soaker-llm] $*"; }
 # ---- configuration (env) ----------------------------------------------------
 PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
-MODEL_PATH="${MODEL_PATH:-/var/lib/super-soaker/models/LFM2.5-2.6B-QAD-Q4_0.gguf}"
-DRAFT_PATH="${DRAFT_PATH:-/var/lib/super-soaker/models/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
 SPEC="${SPEC:-auto}"              # auto|on|off
-CTX="${CTX:-32768}"
 THREADS="${THREADS:-$(nproc)}"
 N_BATCH="${N_BATCH:-1024}"        # logical batch (prefill chunk)
 UBATCH="${UBATCH:-256}"           # physical batch — bounds CUDA workspace peak
 KV_TYPE="${KV_TYPE:-q8_0}"        # KV cache type (f16 = 0.5GiB @32k, q8_0 = 0.25GiB)
-REASONING_BUDGET="${REASONING_BUDGET:-128}"   # empty/"off"|"auto"|N (0 = turbo voice)
 CACHE_REUSE="${CACHE_REUSE:-256}"
 PRIO="${PRIO:-2}"                  # 2 = high (prio sweep: all levels equal on this box)
-ALIAS="${ALIAS:-LFM2.5-2.6B}"
 API_KEY="${API_KEY:-}"
 API_KEY_FILE="${API_KEY_FILE:-}"
 SELF_TEST="${SELF_TEST:-on}"
@@ -28,6 +23,34 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/super-soaker/llama.cpp/bin/llama-server}"
 SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-lfm2.5-2.6b/selftest.py}"
+
+# ---- model selection --------------------------------------------------------
+# LLM_MODEL picks the serving variant (see README "Model choice"):
+#   lfm2.5-1.2b-chat         LFM2.5-1.2B-Instruct QAD-Q4_0 + its DSpark draft
+#                            (default; fastest chat profile — benchmark-
+#                            measured ~2x lower end-to-end latency)
+#   lfm2.5-2.6b-reasoning    LFM2.5-2.6B QAD-Q4_0 + DSpark draft, reasoning
+#                            budget 128 (the agentic profile: best tool
+#                            accuracy, most reliable facts, ~2s slower)
+# Explicit env overrides (MODEL_PATH, DRAFT_PATH, CTX, REASONING_BUDGET) win.
+LLM_MODEL="${LLM_MODEL:-lfm2.5-1.2b-chat}"
+M=/var/lib/super-soaker/models
+case "$LLM_MODEL" in
+  lfm2.5-1.2b-chat)
+    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf}"
+    DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf}"
+    CTX="${CTX:-8192}"
+    REASONING_BUDGET="${REASONING_BUDGET:-0}"
+    ;;
+  lfm2.5-2.6b-reasoning)
+    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-2.6B-QAD-Q4_0.gguf}"
+    DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
+    CTX="${CTX:-32768}"
+    REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    ;;
+  *) echo "[super-soaker-llm] ERROR: unknown LLM_MODEL '$LLM_MODEL'" >&2; exit 1 ;;
+esac
+ALIAS="${ALIAS:-$(basename "$MODEL_PATH" .gguf)}"
 
 if [ ! -x "$LLAMA_BIN" ]; then
     log "ERROR: llama-server not found: $LLAMA_BIN"; exit 1

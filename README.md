@@ -127,6 +127,52 @@ The prompt cache (`--cache-reuse 256`) is what keeps the warm path warm: the
 static Home Assistant Assist prefix is reused across turns, so only the new
 utterance is prefilled.
 
+## Model choice: lfm2.5-1.2b-chat (default) vs lfm2.5-2.6b-reasoning
+
+Two serving profiles share one battery (`bench/ha_benchmark.py` +
+`bench/ha_battery.json`: 20 tool scenarios from the HA Assist API surface + 10
+factual/brevity scenarios, run identically against each config; raw results in
+`bench/results/`):
+
+| profile | warm TTFT | avg reply | decode | tool acc | quality | notes |
+|---|---|---|---|---|---|---|
+| **lfm2.5-1.2b-chat** (default) | **0.07 s** | **0.45 s** | **55.9 w/s** | 85% | 70% | snappiest; weak at multi-digit arithmetic and letter-counting |
+| **lfm2.5-2.6b-reasoning** | 0.32 s | 2.28 s | 12.4 w/s | **90%** | 70% | facts always right; verbose for voice; never over-triggers |
+
+Measured on the box, identical battery/prompt; tool scenarios include no-tool
+negatives (small talk, nonsense, goodbye) that punish models which hallucinate
+device actions. Both share one quirk: "turn on the lights" sometimes maps to
+HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool
+descriptions if it shows up in practice.
+
+**Why lfm2.5-1.2b-chat is the default:** benchmark-measured ~2x lower end-to-end
+latency (0.45 s vs 2.28 s average reply, speech starts ~2 s sooner end to end)
+with tool accuracy close to the 2.6B (85% vs 90%). What it gives up:
+self-corrected arithmetic and letter-counting (no reasoning pass to check
+itself). A third profile — the 2.6B with reasoning disabled — was benchmarked
+and rejected: it over-triggers tools on non-commands, keeps the 2.6B memory
+cost, and is still 2x slower than the 1.2B.
+
+**Pick lfm2.5-2.6b-reasoning if** the assistant must be disciplined about tool
+calls and facts (the agentic profile), and ~2 s replies are acceptable — the
+tradeoff this project historically ran with.
+
+**Both at once does not fit:** measured 7.32/7.62 GB with both LLMs resident
+(105 MB free) — below any safe margin. Run one.
+
+### Switching profiles
+
+```bash
+sudo ./bootstrap.sh --model lfm2.5-2.6b-reasoning   # or lfm2.5-1.2b-chat (default)
+```
+
+On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`)
+and fetches the matching GGUF pair (LiquidAI LFM2.5-1.2B-Instruct-GGUF QAD-Q4_0
++ its DSpark-Q8_0 draft, or the 2.6B pair — sha256-pinned). You can also edit
+`LLM_MODEL=` in `/etc/super-soaker/llm.env` and `systemctl restart
+super-soaker-llm`. Individual overrides (`CTX`, `REASONING_BUDGET`,
+`MODEL_PATH`, ...) still win over the profile defaults.
+
 ## Design tradeoffs: quality vs intelligence vs speed
 
 The guiding rule: **maximum performance inside a hard 8 GB RAM envelope, while
