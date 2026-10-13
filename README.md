@@ -252,6 +252,7 @@ The light profiles (1.2B/2.6B) idle a few hundred mW lower (smaller weights to k
 **3-tts-wyoming-kokoro-82m** — [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) 0.5.0 on a locally built ONNX Runtime 1.22 (CUDA EP; no aarch64 CUDA wheel exists on PyPI — 1.29+ links CUDA 13, which the L4T driver cannot load). The Wyoming wrapper is a vendored copy of [nullable-eth/kokoro-wyoming](https://github.com/nullable-eth/kokoro-wyoming), internalized at `services/3-tts-wyoming-kokoro-82m/kokoro_wyoming.py`:
 
 - Wyoming streaming: audio starts at the first sentence boundary
+- text sanitation before phonemization (`speech_clean.py`): markdown, thinking/reasoning blocks (including half-open ones from truncated streams), tool-call blocks and JSON payloads, stray angle brackets — espeak reads `<` as "less than", `*` as "asterisk". Unit-tested (25 cases in `test_clean.py`) and gated at every service start
 - CUDA arena capped (`KOKORO_GPU_MEM_MB=1024`) — measured comfortable
 - **fp16 model** — validated to fit in RAM; `int8` is *slower* on this GPU (quantized ops fall back to CPU), so don't use it
 - fails fast if `CUDAExecutionProvider` is missing (no silent CPU fallback)

@@ -8,6 +8,7 @@ Exit code 0 = pass.
 import argparse
 import json
 import math
+import os
 import socket
 import struct
 import sys
@@ -113,6 +114,18 @@ def main() -> int:
         failures.append(msg)
         print(f"[selftest-tts] FAIL: {msg}")
 
+    # gate 1: text sanitation unit tests (thinking/tool leaks, stray '<')
+    import subprocess
+    cleaner_test = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "test_clean.py")
+    try:
+        rc = subprocess.run([sys.executable, cleaner_test]).returncode
+        if rc != 0:
+            fail(f"text sanitation unit tests failed (rc={rc})")
+    except Exception as e:
+        fail(f"text sanitation unit tests could not run: {e}")
+
+    # gate 2: Wyoming end-to-end audio
     for streaming in (False, True):
         label = "streaming" if streaming else "plain"
         t = "This is a super soaker self test. One two three four five."
