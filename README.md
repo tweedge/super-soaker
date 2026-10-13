@@ -163,7 +163,8 @@ tradeoff this project historically ran with.
 ### Switching profiles
 
 ```bash
-sudo ./bootstrap.sh --model lfm2.5-2.6b-reasoning   # or lfm2.5-1.2b-chat (default)
+sudo ./bootstrap.sh --model lfm2.5-2.6b-reasoning
+# or: sudo ./bootstrap.sh --model lfm2.5-1.2b-chat (default)
 ```
 
 On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`)

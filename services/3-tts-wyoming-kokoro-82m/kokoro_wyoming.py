@@ -46,6 +46,37 @@ _LANGS = {"a": "en_US", "b": "en_GB", "j": "ja", "z": "zh", "e": "es", "f": "fr"
 
 _SENTENCE_END = re.compile(r"(.*?[.!?;:](?:\s|$))", re.DOTALL)
 
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002700-\U000027BF\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF\U0000FE0F\U0000200D]", flags=re.UNICODE)
+
+
+def clean_for_speech(text: str) -> str:
+    """Strip markdown and symbols the phonemizer would read aloud.
+
+    espeak renders '*' as "asterisk", '`' as "backtick", '#' as "number/
+    hash", '|' as "pipe" — so LLM markdown (bold/bullets/headers/tables)
+    leaks straight into the spoken audio. Sanitize at the TTS boundary so
+    the fix holds no matter which model or integration produced the text.
+    """
+    if not text or not text.strip():
+        return text
+    t = text
+    t = re.sub(r"```.*?```", " code. ", t, flags=re.S)   # fenced blocks
+    t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)        # [text](url) -> text
+    t = re.sub(r"https?://\S+", "", t)                    # bare URLs: noise
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t, flags=re.S)    # **bold**
+    t = re.sub(r"__(.+?)__", r"\1", t, flags=re.S)        # __bold__
+    t = re.sub(r"\*(.+?)\*", r"\1", t, flags=re.S)        # *italic*
+    t = re.sub(r"[*_`#|]{1,3}", "", t)                    # stray markers
+    t = re.sub(r"(?m)^\s*[-+\u2022]\s*", "", t)           # bullet markers
+    t = re.sub(r"(?m)^\s*\d+[.)]\s+", "", t)              # numbered lists
+    t = re.sub(r"(?m)^>{1,}\s?", "", t)                   # blockquotes
+    t = _EMOJI_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t)                            # newlines -> spaces
+    t = re.sub(r"\s+([.,!?;:])", r"\1", t)                # space before punct
+    return t.strip()
+
 
 def _to_int16(samples: np.ndarray) -> bytes:
     return (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
@@ -76,6 +107,9 @@ class KokoroEventHandler(AsyncEventHandler):
 
     async def _speak(self, text: str, voice: str, send_start: bool) -> int:
         """Synthesize one piece and write audio events. Returns sample rate."""
+        text = clean_for_speech(text)
+        if not text:
+            return 24000
         samples, rate = await self._synth(text, voice)
         if send_start:
             await self.write_event(AudioStart(rate=rate, width=2, channels=1).event())
