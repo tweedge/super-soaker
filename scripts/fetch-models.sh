@@ -6,13 +6,20 @@
 # Usage:
 #   ./scripts/fetch-models.sh LFM2.5-2.6B-Q5_K_M.gguf LFM2.5-2.6B-DSpark-F16.gguf
 #
-# Files resolve against LiquidAI/LFM2.5-2.6B-GGUF and
-# LiquidAI/LFM2.5-2.6B-DSpark-GGUF into MODELS_DIR.
+# Files resolve against these repos (first hit wins):
+#   LiquidAI/LFM2.5-2.6B-GGUF, LiquidAI/LFM2.5-2.6B-DSpark-GGUF
+#   LiquidAI/LFM2.5-8B-A1B-GGUF, LiquidAI/LFM2.5-8B-A1B-DSpark-GGUF
+#   unsloth/LFM2.5-8B-A1B-GGUF (Unsloth Dynamic quants, UD-*)
 set -euo pipefail
 
 MODELS_DIR="${MODELS_DIR:-/var/lib/super-soaker/models}"
-BASE="https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main"
-DSB="https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark-GGUF/resolve/main"
+REPOS=(
+    "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main"
+    "https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark-GGUF/resolve/main"
+    "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-GGUF/resolve/main"
+    "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-DSpark-GGUF/resolve/main"
+    "https://huggingface.co/unsloth/LFM2.5-8B-A1B-GGUF/resolve/main"
+)
 
 mkdir -p "$MODELS_DIR"
 
@@ -22,14 +29,14 @@ download() {
         echo "have $out"
         return 0
     fi
-    for url in "$BASE/$name" "$DSB/$name"; do
+    for base in "${REPOS[@]}"; do
         echo "downloading $name"
-        if curl -fL --retry 5 --retry-delay 3 -C - -o "$out.part" "$url"; then
+        if curl -fL --retry 5 --retry-delay 3 -C - -o "$out.part" "$base/$name"; then
             mv "$out.part" "$out"
             return 0
         fi
     done
-    echo "ERROR: could not fetch $name from either GGUF repo" >&2
+    echo "ERROR: could not fetch $name from any known GGUF repo" >&2
     return 1
 }
 

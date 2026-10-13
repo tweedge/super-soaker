@@ -1,6 +1,7 @@
 #!/bin/bash
 # super-soaker LLM service (native): configure + launch llama-server, self-test, serve.
-# Model: LiquidAI LFM2.5-2.6B (QAD-Q4_0) + DSpark-Q8_0 speculative drafter.
+# Model: any LFM2.5 profile selected by LLM_MODEL (see "model selection" below);
+# every profile pairs a target GGUF with its DSpark-Q8_0 speculative drafter.
 set -uo pipefail
 
 log() { echo "[super-soaker-llm] $*"; }
@@ -22,7 +23,7 @@ SELF_TEST_STRICT="${SELF_TEST_STRICT:-off}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/super-soaker/llama.cpp/bin/llama-server}"
-SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-lfm2.5-2.6b/selftest.py}"
+SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py}"
 
 # ---- model selection --------------------------------------------------------
 # LLM_MODEL picks the serving variant (see README "Model choice"):
@@ -30,8 +31,12 @@ SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-lfm2.5-2.6b/sel
 #                            (default; fastest chat profile — benchmark-
 #                            measured ~2x lower end-to-end latency)
 #   lfm2.5-2.6b-reasoning    LFM2.5-2.6B QAD-Q4_0 + DSpark draft, reasoning
-#                            budget 128 (the agentic profile: best tool
-#                            accuracy, most reliable facts, ~2s slower)
+#                            budget 128 (the agentic profile: reliable facts,
+#                            never over-triggers, ~2s slower than the 1.2B)
+#   lfm2.5-8b-a1b-reasoning  LFM2.5-8B-A1B (MoE 8.3B/1.5B active), Unsloth
+#                            UD-IQ2_M + DSpark-Q8_0 draft, reasoning budget
+#                            128 (best tool/quality accuracy on this box;
+#                            fits only at IQ2-class quants — see README)
 # Explicit env overrides (MODEL_PATH, DRAFT_PATH, CTX, REASONING_BUDGET) win.
 LLM_MODEL="${LLM_MODEL:-lfm2.5-1.2b-chat}"
 M=/var/lib/super-soaker/models
@@ -45,6 +50,12 @@ case "$LLM_MODEL" in
   lfm2.5-2.6b-reasoning)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-2.6B-QAD-Q4_0.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
+    CTX="${CTX:-32768}"
+    REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    ;;
+  lfm2.5-8b-a1b-reasoning)
+    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-8B-A1B-UD-IQ2_M.gguf}"
+    DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-8B-A1B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
     REASONING_BUDGET="${REASONING_BUDGET:-128}"
     ;;

@@ -1,13 +1,13 @@
 # super-soaker
 
-Ultra low-latency voice assistant stack for the **NVIDIA Jetson Orin Nano Super** (8 GB): a [LiquidAI/LFM2.5-2.6B](https://huggingface.co/LiquidAI/LFM2.5-2.6B) LLM with [LFM2.5-2.6B-DSpark](https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark) speculative decoding, tiny-en Whisper STT, and Kokoro-82M TTS — all three **built locally at pinned versions, running natively (no Docker), resident in RAM with none of it swapped**.
+Ultra low-latency voice assistant stack for the **NVIDIA Jetson Orin Nano Super** (8 GB): a [LiquidAI LFM2.5](https://huggingface.co/collections/LiquidAI/lfm25) LLM (1.2B, 2.6B, or [8B-A1B](https://huggingface.co/LiquidAI/LFM2.5-8B-A1B) MoE — pick at install) with [DSpark](https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark) speculative decoding, tiny-en Whisper STT, and Kokoro-82M TTS — all three **built locally at pinned versions, running natively (no Docker), resident in RAM with none of it swapped**.
 
 Designed for a single caller (Home Assistant + [hass_local_openai_llm](https://github.com/skye-harris/hass_local_openai_llm) / Home Assistant Voice) where every millisecond of response latency is felt. The three services run in pipeline order and are named so it shows at a glance:
 
 | # | service | function | protocol | port |
 |---|---------|----------|----------|------|
 | 1 | `1-stt-wyoming-whisper-tiny` | speech → text (Whisper tiny/en, CUDA) | Wyoming | `tcp/10300` |
-| 2 | `2-llm-llama.cpp-lfm2.5-2.6b` | text → text (LFM2.5-2.6B QAD + DSpark draft) | OpenAI HTTP | `tcp/8080` |
+| 2 | `2-llm-llama.cpp-super-soaker-managed` | text → text (LFM2.5 profile + DSpark draft) | OpenAI HTTP | `tcp/8080` |
 | 3 | `3-tts-wyoming-kokoro-82m` | text → speech (Kokoro-82M fp16, CUDA, streaming) | Wyoming | `tcp/10210` |
 
 ## Quick start (new Jetson)
@@ -30,7 +30,7 @@ That is the whole install. `bootstrap.sh`:
 6. locks power to `MAXN_SUPER` + `jetson_clocks`,
 7. waits for each service's built-in self-test to pass, then reboots.
 
-Re-running is safe (idempotent). Flags: `--skip-build` (reuse built wheels), `--no-reboot`, `--force-jobs` (see below). Service tuning lives in `/etc/super-soaker/*.env` (written once, preserved across re-runs).
+Re-running is safe (idempotent). Flags: `--skip-build` (reuse built wheels), `--no-reboot`, `--force-jobs` (see below), `--model {lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning}` (default `lfm2.5-1.2b-chat`; see "Model choice"). Service tuning lives in `/etc/super-soaker/*.env` (written once, preserved across re-runs).
 
 ### Build threads: 1 by default, 2 maximum
 
@@ -95,44 +95,59 @@ Speech-completion is dominated by *playback duration of the answer*, not synthes
 
 The prompt cache (`--cache-reuse 256`) is what keeps the warm path warm: the static Home Assistant Assist prefix is reused across turns, so only the new utterance is prefilled.
 
-## Model choice: lfm2.5-1.2b-chat (default) vs lfm2.5-2.6b-reasoning
+## Model choice: three serving profiles, one battery
 
-Two serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios from the HA Assist API surface + 10 factual/brevity scenarios, run identically against each config; raw results in `bench/results/`):
+Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios from the HA Assist API surface + 10 factual/brevity scenarios, run identically against each config; raw results in `bench/results/`):
 
-| profile | warm TTFT | avg reply | decode | tool acc | quality | notes |
-|---|---|---|---|---|---|---|
-| **lfm2.5-1.2b-chat** (default) | **0.07 s** | **0.45 s** | **55.9 w/s** | 85% | 70% | snappiest; weak at multi-digit arithmetic and letter-counting |
-| **lfm2.5-2.6b-reasoning** | 0.32 s | 2.28 s | 12.4 w/s | **90%** | 70% | facts always right; verbose for voice; never over-triggers |
+| profile | model | warm TTFT | avg reply | decode | tool acc | quality | notes |
+|---|---|---|---|---|---|---|---|
+| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | **0.07 s** | **0.45 s** | **55.9 w/s** | 85% | 70% | snappiest; weak at multi-digit arithmetic and letter-counting |
+| **lfm2.5-2.6b-reasoning** | LFM2.5-2.6B QAD-Q4_0 | 0.32 s | 2.28 s | 12.4 w/s | 90% | 70% | facts always right; verbose for voice; never over-triggers |
+| **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 0.50 s | 4.67 s | 10.5 w/s | **100%** | **90%** | MoE (8.3B total / 1.5B active); best accuracy; slowest replies |
 
-Measured on the box, identical battery/prompt; tool scenarios include no-tool negatives (small talk, nonsense, goodbye) that punish models which hallucinate device actions. Both share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice.
+Measured on the box, identical battery/prompt; tool scenarios include no-tool negatives (small talk, nonsense, goodbye) that punish models which hallucinate device actions. All three pair their target GGUF with a DSpark-Q8_0 speculative drafter (~29–30% of drafted tokens accepted). The 1.2B and 2.6B share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice. The 8B is the only profile that never gets a tool call wrong on this battery.
 
-**Why lfm2.5-1.2b-chat is the default:** benchmark-measured ~2x lower end-to-end latency (0.45 s vs 2.28 s average reply, speech starts ~2 s sooner end to end) with tool accuracy close to the 2.6B (85% vs 90%). What it gives up: self-corrected arithmetic and letter-counting (no reasoning pass to check itself). A third profile — the 2.6B with reasoning disabled — was benchmarked and rejected: it over-triggers tools on non-commands, keeps the 2.6B memory cost, and is still 2x slower than the 1.2B.
+**Why lfm2.5-1.2b-chat is the default:** benchmark-measured ~2x lower end-to-end latency than the 2.6B (0.45 s vs 2.28 s average reply) and ~10x lower than the 8B, with tool accuracy close to the 2.6B (85% vs 90%). What it gives up: self-corrected arithmetic and letter-counting (no reasoning pass to check itself). A fourth profile — the 2.6B with reasoning disabled — was benchmarked and rejected: it over-triggers tools on non-commands, keeps the 2.6B memory cost, and is still 2x slower than the 1.2B.
 
 **Pick lfm2.5-2.6b-reasoning if** the assistant must be disciplined about tool calls and facts (the agentic profile), and ~2 s replies are acceptable — the tradeoff this project historically ran with.
 
-**Both at once does not fit:** measured 7.32/7.62 GB with both LLMs resident (105 MB free) — below any safe margin. Run one.
+**Pick lfm2.5-8b-a1b-reasoning if** tool-call and answer correctness matter more than reply latency. The 8B-A1B is a reasoning-only MoE: it spends its 1.5B active parameters on a chain-of-thought pass before answering, so replies take ~4.7 s on average (vs 2.3 s for the 2.6B) but it is the only profile here that scores 100% on tool accuracy and 90% on factual quality. It also answers some scenarios the dense models simply cannot (reliable letter-counting, multi-digit arithmetic self-checks).
+
+**Only one LLM fits at a time:** measured 7.32/7.62 GB with both dense LLMs resident (105 MB free) — below any safe margin. The 8B-A1B is worse still: even at IQ2-class quants it needs ~4.3 GB of RAM by itself (see below). Run one.
+
+### RAM cost per profile (measured, LLM + DSpark draft + KV + nvgpu pool)
+
+| profile | resident LLM | peak (LLM+TTS concurrent) | fits with STT+TTS? |
+|---|---|---|---|
+| lfm2.5-1.2b-chat | ~2.6 GB | ~2.6 GB | yes, ~1.8 GB headroom |
+| lfm2.5-2.6b-reasoning | ~3.0 GB | ~3.2 GB | yes, ~1.4 GB headroom |
+| lfm2.5-8b-a1b-reasoning (UD-IQ2_M) | ~4.3 GB | ~4.8 GB (7.04/7.62 GB board) | yes, but only ~580 MB headroom |
+
+The 8B-A1B leaves little slack: every quant larger than UD-IQ2_M was measured and rejected (see "8B-A1B quant hunt" in AGENTS.md). Q4_0 (4.8 GB of weights) does not fit at all — it starts, then the decode collapses from 33 t/s to 2.4 t/s as the box thrashes. UD-IQ3_XXS completes the battery with the best quality score but pushes 321 MB into zram and peaks at 7.49/7.62 GB — a violation of the stack's no-swap rule and too close to the edge for a concurrent TTS peak. UD-Q2_K_XL fits (3 MB swap) but is dominated by UD-IQ2_M on every axis: slower decode, lower accuracy, more RAM. UD-IQ2_M is the only 8B quant that runs the whole battery with zero swap and real headroom.
 
 ### Switching profiles
 
 ```bash
 sudo ./bootstrap.sh --model lfm2.5-2.6b-reasoning
+# or: sudo ./bootstrap.sh --model lfm2.5-8b-a1b-reasoning
 # or: sudo ./bootstrap.sh --model lfm2.5-1.2b-chat (default)
 ```
 
-On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (LiquidAI LFM2.5-1.2B-Instruct-GGUF QAD-Q4_0
-+ its DSpark-Q8_0 draft, or the 2.6B pair — sha256-pinned). You can also edit `LLM_MODEL=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `REASONING_BUDGET`, `MODEL_PATH`, ...) still win over the profile defaults.
+On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct QAD-Q4_0 + DSpark-Q8_0, LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0, or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0. You can also edit `LLM_MODEL=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `REASONING_BUDGET`, `MODEL_PATH`, ...) still win over the profile defaults.
+
+All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=128` for the two reasoning profiles (the 1.2B chat profile runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable.
 
 ## Design tradeoffs: quality vs intelligence vs speed
 
 The guiding rule: **maximum performance inside a hard 8 GB RAM envelope, while tolerating a slightly slower reply when quality would otherwise suffer.** Every component below is the highest-quality option that still fits and keeps the conversation fluid.
 
-### LLM — LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0 draft
+### LLM — LFM2.5 family + DSpark-Q8_0 draft (profile-selected)
 
 | decision | chosen | rejected | why |
 |---|---|---|---|
-| model size | 2.6B | 7B/8B-class | 8B-class models do not fit alongside STT+TTS; 2.6B is the smartest model that leaves room for the rest of the pipeline |
-| target quant | QAD-Q4_0 | Q4_K_M, Q5_K_M | QAD (quantization-aware distill) is LiquidAI's own quality-preserving recipe — measurably closer to full precision than naive k-quants at the same size |
-| draft model | DSpark-Q8_0 (on) | no draft, or Q4 draft | spec decoding raises accepted decode to ~1.5–2.2× with *identical output distribution* (quality-neutral speed); Q8_0 draft is more accurate than Q4, and its RAM cost is affordable |
+| model size | 1.2B / 2.6B / 8B-A1B (profile) | 7B dense, 20B+ | the three profiles are the LFM2.5 sizes that fit alongside STT+TTS; dense 8B-class weights do not fit at usable quants (see quant hunt below) |
+| target quant | QAD-Q4_0 (dense), UD-IQ2_M (8B-A1B) | Q4_K_M, Q5_K_M for the 8B | QAD (quantization-aware distill) is LiquidAI's own quality-preserving recipe; for the 8B-A1B MoE only IQ2-class quants fit — Unsloth's UD-IQ2_M was the measured winner of a four-quant shootout |
+| draft model | DSpark-Q8_0 (on) | no draft, or Q4 draft | spec decoding raises accepted decode to ~1.5–2.2× with *identical output distribution* (quality-neutral speed); Q8_0 draft is more accurate than Q4, and its RAM cost is affordable (0.35–0.36 GB) |
 | KV cache | q8_0 @ 32k ctx | f16 | halves KV RAM with no observed quality hit; keeps the long HA prompt + history in context instead of truncating it (intelligence win) |
 | reasoning budget | 128 tokens | 0 / unlimited | bounded scratch thinking: answers keep some reasoning quality, latency stays predictable; unlimited thinking would blow the reply budget |
 | runtime | llama.cpp, single slot | vLLM, batching | vLLM's pool + scheduler overhead measured 2.8–3.3 GB earlier; single-caller makes batching pure loss. `FA_ALL_QUANTS` + CUDA graphs recover the speed instead |
@@ -173,19 +188,34 @@ All figures are `MemTotal − MemFree − Cached` deltas at 100 ms sampling, whi
 
 | component | resident | peak (LLM+TTS concurrent) |
 |---|---|---|
-| LLM (llama.cpp + nvgpu pool) | ~2.6 GB | flat under load |
+| LLM lfm2.5-1.2b-chat (llama.cpp + nvgpu pool) | ~2.6 GB | flat under load |
+| LLM lfm2.5-2.6b-reasoning | ~3.0 GB | flat under load |
+| LLM lfm2.5-8b-a1b-reasoning (UD-IQ2_M + DSpark) | ~4.3 GB | ~4.8 GB |
 | STT (whisper tiny/en int8) | ~0.7 GB | flat |
 | TTS (kokoro fp16, ONNX CUDA) | ~1.1 GB | ~1.5 GB |
 | OS (headless) | ~0.8 GB | — |
-| **total** | **~5.2 GB / 7.4 GB** | **~5.6 GB / 7.4 GB** |
+| **total with default 1.2B profile** | **~5.2 GB / 7.4 GB** | **~5.6 GB / 7.4 GB** |
+| **total with 8B-A1B profile** | **~6.9 GB / 7.4 GB** | **~7.0 GB / 7.4 GB** |
 
-~1.8 GB headroom at peak; every service unit pins `MemorySwapMax=0` and `vm.swappiness=10`, so the answer to "is anything swapped?" is *no* by construction. Verify with `grep VmSwap /proc/$(pgrep -f serve.sh)/status` or `free -h`.
+~1.8 GB headroom at peak on the default profile, ~0.5 GB on the 8B-A1B profile (measured 7.04/7.62 GB peak with zero swap — see the quant hunt notes); every service unit pins `MemorySwapMax=0` and `vm.swappiness=10`, so the answer to "is anything swapped?" is *no* by construction. Verify with `grep VmSwap /proc/$(pgrep -f serve.sh)/status` or `free -h`.
 
 Earlier docker-based deployments of this stack did **not** fit: the daemon, per-container library duplication, and the LLM's GPU pool together pushed the box into a zram swap spiral (TTS OOM-killed, machine wedged). Running native is the make-or-break difference.
 
+## Power draw (measured, `tegrastats` VDD_IN)
+
+Whole-board input power at `MAXN_SUPER` + `jetson_clocks`, all three services resident (8B-A1B profile, the heaviest config):
+
+| state | VDD_IN | note |
+|---|---|---|
+| boot idle (services stopped) | ~6.0 W | clocks locked, no work |
+| stack resident, no traffic | ~6.9 W | three models in RAM, GPU idle |
+| LLM decode + TTS synthesis | ~16.5–17 W | sustained, well under the 25 W MAXN_SUPER envelope |
+
+The light profiles (1.2B/2.6B) idle a few hundred mW lower (smaller weights to keep refreshed, less memory pressure) and peak a bit under load. In practice: an always-on voice assistant costs about **7 W idle**, with brief **17 W bursts** during replies. At €0.30/kWh that is roughly €18/year for the compute; the rest of the board (NVMe, display if attached) adds a little. Speech-completion latency, not power, is the binding constraint on this box.
+
 ## Pointing Home Assistant at it
 
-- *Local OpenAI LLM* → `http://<jetson-ip>:8080/v1`, server type **llama.cpp**, model `LFM2.5-2.6B`, API key blank.
+- *Local OpenAI LLM* → `http://<jetson-ip>:8080/v1`, server type **llama.cpp**, model `LFM2.5-2.6B` (or whatever the installed profile's alias is — check `curl http://<jetson-ip>:8080/v1/models`), API key blank.
 - *Wyoming STT* → `tcp://<jetson-ip>:10300`.
 - *Wyoming TTS* → `tcp://<jetson-ip>:10210`, voice e.g. `af_heart` (53 Kokoro voices; prefix `a`=US, `b`=UK, `j`=ja, `z`=zh, `e`=es, `f`=fr, `h`=hi, `i`=it, `p`=pt-BR).
 
@@ -193,12 +223,12 @@ Earlier docker-based deployments of this stack did **not** fit: the daemon, per-
 
 **1-stt-wyoming-whisper-tiny** — [wyoming-faster-whisper](https://github.com/rhasspy/wyoming-faster-whisper) 3.3.1 on CUDA via a locally built CTranslate2 (the PyPI aarch64 wheel is CPU-only). Model `tiny`, language `en`, compute int8, beam 5. On start it warms CUDA with two transcription round-trips, then runs its self-test (espeak-ng speaks "hello world", the service must transcribe it).
 
-**2-llm-llama.cpp-lfm2.5-2.6b** — llama-server at the pinned commit with `GGML_CUDA_FA_ALL_QUANTS`, CUDA graphs, and `GGML_CUDA_NO_VMM` (Jetson iGPU VMM crash workaround, llama.cpp #29142). `LFM2.5-2.6B-QAD-Q4_0` target + `LFM2.5-2.6B-DSpark-Q8_0` drafter (`--spec-type draft-dspark`).
+**2-llm-llama.cpp-super-soaker-managed** — llama-server at the pinned commit with `GGML_CUDA_FA_ALL_QUANTS`, CUDA graphs, and `GGML_CUDA_NO_VMM` (Jetson iGPU VMM crash workaround, llama.cpp #29142). The model is not in the service name: `LLM_MODEL` in `/etc/super-soaker/llm.env` selects the profile, which picks the target GGUF and its `DSpark-Q8_0` drafter (`--spec-type draft-dspark`).
 
 | knob | value | why |
 |---|---|---|
 | `-np 1` | single slot | LFM2 short-conv state corrupts under co-batching (llama.cpp #29002); single caller anyway |
-| `-c 32768` | context tokens | matches long HA system prompt + history |
+| `-c 32768` | context tokens (8192 on the 1.2B profile) | matches long HA system prompt + history |
 | `-ctk/-ctv q8_0` | KV cache quant | ~half the KV RAM of f16, no quality hit observed |
 | `-b 1024 -ub 256` | batches | bounds CUDA workspace peak |
 | `--cache-reuse 256` | prompt cache | turns the HA Assist prompt into a prefix hit |
@@ -222,7 +252,7 @@ Each service ships a stdlib-only end-to-end test that runs at every start (`SELF
 sudo -u super-soaker /opt/super-soaker/venv-stt/bin/python3 \
     /opt/super-soaker/services/1-stt-wyoming-whisper-tiny/selftest.py
 sudo -u super-soaker python3 \
-    /opt/super-soaker/services/2-llm-llama.cpp-lfm2.5-2.6b/selftest.py
+    /opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py
 sudo -u super-soaker /opt/super-soaker/venv-tts/bin/python3 \
     /opt/super-soaker/services/3-tts-wyoming-kokoro-82m/selftest.py
 ```
@@ -250,7 +280,14 @@ Layout on disk:
 
 ## Benchmarks
 
-The interactive bench lives in `bench/` and works against the running service (the LLM-only sweeps from the earlier docker era are documented in `notes/`):
+The profile-comparison battery lives in `bench/ha_benchmark.py` + `bench/ha_battery.json` (30 scenarios: 20 tool + 10 quality, identical prompts per profile). Archived results in `bench/results/`: `ha_A-1.2b-noreason.json`, `ha_B-2.6b-noreason.json`, `ha_C-2.6b-reason.json`, `ha_D-8b-reason.json`. To re-run against the live service:
+
+```bash
+python3 bench/ha_benchmark.py --base-url http://127.0.0.1:8080 \
+    --model <alias from /v1/models> --label my-run
+```
+
+The interactive bench also lives in `bench/` (the LLM-only sweeps from the earlier docker era are documented in `notes/`):
 
 ```bash
 python3 bench/bench_openai.py      # real-world OpenAI suite
@@ -258,7 +295,7 @@ python3 bench/quality_check.py     # quality battery
 bash bench/matrix.sh               # see script for sub-sweeps
 ```
 
-Extra GGUFs for sweep matrices can be fetched with `scripts/fetch-models.sh`.
+Extra GGUFs for sweep matrices can be fetched with `scripts/fetch-models.sh` (resolves against the LiquidAI and Unsloth GGUF repos).
 
 ## Development notes
 

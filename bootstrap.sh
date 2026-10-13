@@ -4,7 +4,8 @@
 # running three-service voice stack:
 #
 #   1-stt-wyoming-whisper-tiny      Wyoming STT  tcp/10300
-#   2-llm-llama.cpp-lfm2.5-2.6b     OpenAI API   tcp/8080
+#   2-llm-llama.cpp-super-soaker-managed
+#                                   OpenAI API   tcp/8080  (model from --model)
 #   3-tts-wyoming-kokoro-82m        Wyoming TTS  tcp/10210
 #
 # Everything is built locally at pinned versions and installed natively (no
@@ -17,7 +18,8 @@
 #   --no-reboot    do not reboot at the end (services start anyway)
 #   --force-jobs   allow JOBS>2 (dangerous on 8 GB devices — see below)
 #
-#   --model {lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning}   default lfm2.5-1.2b-chat
+#   --model {lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning}
+#                                         default lfm2.5-1.2b-chat
 #
 # Build parallelism is RAM-critical: the compilers (especially nvcc for ONNX
 # Runtime) peak at several GB per thread on an 8 GB Orin Nano Super. JOBS=1 is
@@ -42,13 +44,17 @@ SKIP_BUILD=0
 DO_REBOOT=1
 FORCE_JOBS=0
 LLM_MODEL=""
+
+log() { echo -e "\n[bootstrap] $*"; }
+die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build)  SKIP_BUILD=1 ;;
         --no-reboot)   DO_REBOOT=0 ;;
         --force-jobs)  FORCE_JOBS=1 ;;
         --model)       if [ $# -lt 2 ]; then
-                           echo "--model requires a value: lfm2.5-1.2b-chat or lfm2.5-2.6b-reasoning" >&2
+                           echo "--model requires a value: lfm2.5-1.2b-chat, lfm2.5-2.6b-reasoning, or lfm2.5-8b-a1b-reasoning" >&2
                            exit 2
                        fi
                        LLM_MODEL="$2"; shift ;;
@@ -58,8 +64,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$LLM_MODEL" in
-    ""|lfm2.5-2.6b-reasoning|lfm2.5-1.2b-chat) ;;
-    *) die "unknown --model '$LLM_MODEL' (lfm2.5-2.6b-reasoning | lfm2.5-1.2b-chat)" ;;
+    ""|lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) ;;
+    *) die "unknown --model '$LLM_MODEL' (lfm2.5-1.2b-chat | lfm2.5-2.6b-reasoning | lfm2.5-8b-a1b-reasoning)" ;;
 esac
 
 # 1 compile thread by default; >2 needs --force-jobs (deps/limit-jobs.sh).
@@ -68,9 +74,6 @@ export JOBS
 if [ "${FORCE_JOBS}" = "1" ]; then
     export FORCE=1
 fi
-
-log() { echo -e "\n[bootstrap] $*"; }
-die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root: sudo $0"
 
@@ -198,21 +201,33 @@ fetch() {
 case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
   lfm2.5-2.6b-reasoning)
     log "  LLM: LFM2.5-2.6B (agentic reasoning profile)"
-    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
-          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
-          "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1"
-    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-DSpark-GGUF/resolve/main/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
-          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
-          "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"
-    ;;
-  *)
-    log "  LLM: LFM2.5-1.2B-Instruct (fast chat profile)"
     fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-QAD-Q4_0.gguf" \
           "${MODEL_DIR}/LFM2.5-2.6B-QAD-Q4_0.gguf" \
           "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"
     fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark-GGUF/resolve/main/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
           "${MODEL_DIR}/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
           "85a98fafdaf1328b6876fd1360d7ed69e74c6cefc14dd07fb6306e1940386c87"
+    ;;
+  lfm2.5-8b-a1b-reasoning)
+    log "  LLM: LFM2.5-8B-A1B UD-IQ2_M (MoE reasoning profile)"
+    # Unsloth UD-IQ2_M is the largest 8B-A1B quant that fits with STT+TTS
+    # resident on the 8 GB box without touching swap (see README "Model
+    # choice"); the drafter is LiquidAI's official DSpark-Q8_0.
+    fetch "https://huggingface.co/unsloth/LFM2.5-8B-A1B-GGUF/resolve/main/LFM2.5-8B-A1B-UD-IQ2_M.gguf" \
+          "${MODEL_DIR}/LFM2.5-8B-A1B-UD-IQ2_M.gguf" \
+          "463670a7140a5d9e2a05f05afce1cd55e81ec764bbfd26e80287727d3e48645f"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-DSpark-GGUF/resolve/main/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
+          "78c6edb3ec97d54fa2e6ec1ba44c394db0a1ae62fcd854d2193389c1295e0a6d"
+    ;;
+  *)
+    log "  LLM: LFM2.5-1.2B-Instruct (fast chat profile)"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
+          "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-DSpark-GGUF/resolve/main/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
+          "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"
     ;;
 esac
 fetch "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx" \
@@ -241,6 +256,14 @@ mkdir -p "${INSTALL_ROOT}/services" "${INSTALL_ROOT}/deps"
 cp -a "${REPO_DIR}/services/." "${INSTALL_ROOT}/services/"
 cp -a "${REPO_DIR}/deps/." "${INSTALL_ROOT}/deps/"
 chmod +x "${INSTALL_ROOT}"/services/*/serve.sh "${INSTALL_ROOT}"/deps/*.sh
+# service dirs renamed/removed in the repo must not linger on installed nodes
+for d in "${INSTALL_ROOT}/services"/*/; do
+    name="$(basename "$d")"
+    if [ ! -d "${REPO_DIR}/services/${name}" ]; then
+        log "  removing stale service dir ${name}"
+        rm -rf "$d"
+    fi
+done
 
 # env files: written once; edits are preserved on re-run
 write_env() {
@@ -336,7 +359,7 @@ cat <<'EOF'
 
 [bootstrap] stack ready:
   STT  wyoming   tcp://<host>:10300   (1-stt-wyoming-whisper-tiny)
-  LLM  OpenAI    http://<host>:8080   (2-llm-llama.cpp-lfm2.5-2.6b)
+  LLM  OpenAI    http://<host>:8080   (2-llm-llama.cpp-super-soaker-managed)
   TTS  wyoming   tcp://<host>:10210   (3-tts-wyoming-kokoro-82m)
 
   logs:   journalctl -u super-soaker-{stt,llm,tts} -f

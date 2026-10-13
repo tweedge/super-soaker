@@ -1,0 +1,81 @@
+# AGENTS.md — conventions and institutional knowledge for super-soaker
+
+Read this before changing code, docs, or the deployed stack. The README documents the system as shipped; this file documents how to work on it without rediscovering everything the hard way.
+
+## Documentation style: soft wrap, never hard wrap
+
+All prose in markdown files (README.md, AGENTS.md, notes/*.md) uses **soft wrapping**: one paragraph = one line, however long. Do not reflow paragraphs to 80 columns. Tables and code blocks wrap naturally; paragraphs do not. This was a deliberate reflow (see git history) — editors handle long lines fine, and diffs stay readable.
+
+## Repository conventions
+
+- **Three services, three directories**: `services/1-stt-*`, `2-llm-llama.cpp-super-soaker-managed`, `3-tts-*`. The numeric prefix sets pipeline order and startup order. The LLM service directory is deliberately model-agnostic — the model is chosen by `LLM_MODEL=` in `/etc/super-soaker/llm.env`, never by renaming the service. Do not put model names back in service paths.
+- **Everything pinned**: llama.cpp by commit (`b11552` / `23b0202a1`), CTranslate2 4.5.0, ONNX Runtime 1.22.0, every Python package exact-version, every model URL paired with its SHA-256 in `bootstrap.sh`. If you bump a pin, bump the hash, and re-run the self-tests end to end.
+- **bootstrap.sh is idempotent and re-runnable**: env files in `/etc/super-soaker/` are written once and preserved; model fetches skip when hash-verified; service dirs renamed/removed in the repo are pruned from `/opt/super-soaker/services` on re-run. Re-running on a live node is the normal way to switch profiles (`--model`).
+- **Model profiles live in exactly two places**: the fetch case in `bootstrap.sh` (URLs + hashes) and the `case "$LLM_MODEL"` block in `services/2-llm-llama.cpp-super-soaker-managed/serve.sh` (paths + CTX + reasoning budget). A new profile needs both, plus a README row. Keep the three profile names (`lfm2.5-1.2b-chat`, `lfm2.5-2.6b-reasoning`, `lfm2.5-8b-a1b-reasoning`) stable — they appear in operators' env files.
+- **Service naming for humans**: units are `super-soaker-{stt,llm,tts,clocks}.service`; the directory names encode pipeline order and function. User-facing docs should quote the directory names.
+
+## Testing conventions
+
+- **Self-tests are stdlib-only Python**, run at every service start (`SELF_TEST=on` in the env files) and must pass for the service to stay up. They exercise the real end-to-end path (CUDA warmup, a real inference round trip, tool-calling as the HA integration does it, prompt-cache behavior). If you change serving parameters, run all three by hand (commands in the README) before declaring victory.
+- **The model battery** is `bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios (including no-tool negatives that punish over-triggering) + 10 factual/brevity scenarios. Identical prompts and `max_tokens` for every profile — the numbers are only comparable because the battery is frozen. Archive results as `bench/results/ha_<LETTER>-<label>.json` and never edit old result files.
+- **When comparing models, control the confounders**: same CTX, same reasoning budget, same draft/speculative settings, same battery, same box, clocks locked. The 8B-A1B profile intentionally matches the 2.6B's `CTX=32768` / `REASONING_BUDGET=128` so the comparison is about the model, not the knobs.
+- **Shell edits get `bash -n`** before deploy. There is no linter; `shellcheck`-clean is nice but not enforced.
+
+## Measurement methodology (how the numbers in the README were obtained)
+
+- **Memory**: `tegrastats` `RAM used/total` or `MemTotal − MemFree − Cached` deltas, not RSS — the Jetson iGPU driver (`nvgpu`) allocates kernel memory that per-process RSS cannot see. A `llama-server` at 700 MB RSS can be sitting on 4+ GB of real footprint. `VmSwap` in `/proc/<pid>/status` is the "is anything swapped" oracle; the services are pinned `MemorySwapMax=0` so the answer must be zero.
+- **Reboot between memory experiments.** Stopping llama-server does not reliably return its memory immediately: the nvgpu pool and page cache linger and inflate the next measurement (a stopped stack once read 4.5 GB used; after reboot, 2.2 GB). If a measurement looks wrong by ~2 GB, suspect stale pool, not the model.
+- **`/tmp` is wiped on reboot** on the target OS. Keep measurement harnesses and results in `/var/tmp/` when the experiment involves reboots.
+- **When loading an unknown-size model on an 8 GB box, run a watchdog**: a small loop that kills the server if available RAM drops under ~80 MB or swap grows past baseline. The watchdog saved the box during the Q4_0 attempt (decode collapsing into zram thrash); without it the attempt ends in a power reset.
+- **Power**: `tegrastats` `VDD_IN` is whole-board input power. Sample at 0.5–1 s and report min/median/max; idle numbers are only meaningful with the full stack resident and clocks locked.
+
+## The 8B-A1B quant hunt (why the profile uses UD-IQ2_M)
+
+LFM2.5-8B-A1B is 8.3B total / 1.5B active (MoE: 32 experts, 4 active per token, gated short-conv LFM2 hybrid, reasoning-only). Total params drive RAM, active params drive speed — so it runs fast (10.5 w/s decode on this box) but needs its whole quant in RAM alongside STT+TTS. Four quants were measured on-box with the real battery (CTK/CTV q8_0, DSpark-Q8_0 draft, 32k ctx, reasoning 128):
+
+| quant | size | peak RAM | swap | tool acc | quality | verdict |
+|---|---|---|---|---|---|---|
+| LiquidAI Q4_0 | 4.84 GB | — | thrash | — | — | **does not fit**: watchdog kill at 72 MB free; decode collapsed 33 → 2.4 t/s |
+| Unsloth UD-IQ3_XXS | 3.27 GB | 7.49/7.62 GB | 321 MB | 95% | 100% | best quality, but violates no-swap and leaves no room for a TTS peak |
+| Unsloth UD-Q2_K_XL | 2.93 GB | 7.27/7.62 GB | 3 MB | 90% | 90% | fits, but dominated by UD-IQ2_M on every axis |
+| **Unsloth UD-IQ2_M** | **2.75 GB** | **7.04/7.62 GB** | **0** | **100%** | **90%** | **chosen**: zero swap, ~580 MB headroom, fastest decode |
+
+The counter-intuitive part: the smaller quant won on accuracy too (100% tool). Battery noise is real at n=1 per scenario, but the takeaway stands — on this box the 8B-A1B only has one honest fit, and IQ2-class quants are not automatically broken for MoE models (only 4 of 32 experts activate per token; a lot of the weights are rarely hot). If someone proposes "just use Q4_K_M", the answer is the table above.
+
+Prefer **Unsloth or LiquidAI official** GGUFs. Third-party requantized uploads vary in quality and provenance; if a new quant is needed, prefer `unsloth/LFM2.5-8B-A1B-GGUF` (Unsloth Dynamic quants) or `LiquidAI/*-GGUF` first.
+
+## Performance quirks worth not re-discovering
+
+- **Speculative decoding (DSpark) is quality-neutral speed** — the target distribution is unchanged, so there is never a reason to turn it off on a memory-fit profile. Measured ~29–30% of drafted tokens accepted on the 8B-A1B (2.7–3.1 accepted per verification step). The drafter is only ~0.36 GB at Q8_0 — always take it.
+- **Quantized ops can be slower than fp16 on this GPU.** The TTS int8 model was measurably slower than fp16 because quantized kernels fall back to CPU. "Smaller = faster" is false on Orin; measure every quant change.
+- **CUDA graphs are load-bearing** (`GGML_CUDA_GRAPHS=ON`): decode speed on the iGPU drops sharply without them. `FA_ALL_QUANTS` keeps flash-attention available for every quant.
+- **`GGML_CUDA_NO_VMM=ON` is not optional** on Jetson — the driver's virtual-memory-manager path reserves ~32 GB of address space and crashes (llama.cpp #29142).
+- **Single slot (`-np 1`) is required** for LFM2: short-conv state corrupts under co-batching (llama.cpp #29002). Fine anyway — this stack has one caller.
+- **Prompt cache (`--cache-reuse 256`) is the warm-path magic**: the static HA Assist prefix is reused across turns; cold prefill of the full prompt is ~15 s vs ~0.3 s warm TTFT. Don't let context changes churn the prefix.
+- **KV cache at q8_0** halves RAM vs f16 with no observed quality hit at 32k ctx. f16 KV is a rejected trade here.
+- **Bounded reasoning (`--reasoning-budget 128`)** keeps reply latency predictable. The 8B-A1B is reasoning-*only* — it always thinks first — so the budget is what makes it voice-usable at all.
+- **Words/s vs tok/s**: the battery reports words/s; llama-server logs tok/s. For English text, roughly 1 w/s ≈ 1.3–1.5 t/s. Compare like with like.
+
+## Jetson-specific things to keep in mind
+
+- **Unified memory**: the GPU is an iGPU with no dedicated VRAM. "GPU memory" is system RAM, and the driver's allocations live in kernel space where `docker stats`/RSS can't see them. Budget in terms of board RAM, always.
+- **8 GB is the whole budget** — OS (~0.8 GB) + STT (~0.7 GB) + TTS (~1.1–1.5 GB) is ~3 GB before the LLM has loaded a byte. Measure candidate models *with the voice stack resident*, not on an idle box.
+- **Power modes matter for latency**: `MAXN_SUPER` + `jetson_clocks` locks clocks; without it, first-token latency wobbles as the DVFS governor ramps. The `super-soaker-clocks.service` unit exists to hold this at boot.
+- **Whole-board power is modest**: measured ~6.9 W with the stack resident idle, ~16.5–17 W during LLM decode + TTS synthesis. Cooling headroom is rarely the problem; RAM is.
+- **`/dev/nvhost*` and `renderD128` access**: service users need the `video` **and** `render` groups or CUDA silently reports zero devices and everything downstream fails with unhelpful errors.
+- **L4T ties your CUDA version to your driver**: you cannot load a CUDA-13-linked binary on a CUDA-12.6 L4T driver. This is why ONNX Runtime is built locally at 1.22 (the PyPI aarch64 CUDA wheels don't exist anyway, and 1.29+ links CUDA 13).
+- **nvcc is RAM-hungry**: ONNX Runtime's flash-attention kernels peak near 3.5 GB RSS per compile thread. `JOBS=1` (2 max) on 8 GB — the build scripts enforce it; `--force-jobs` is for 16 GB devices. High parallelism has wedged this class of machine into a swap spiral requiring a power reset.
+- **zram swap exists on the stock image** (3.8 GB across 6 devices). Under memory pressure the box does not OOM immediately — it thrashes into zram and latency dies first. Thrash is the failure mode to watch for, not the OOM killer.
+- **Kernel/systemd version quirks**: `MemorySwapMax=0` works on this L4T systemd; `sysctl --system` may print harmless "Invalid argument" lines for keys the Tegra kernel lacks — ignore.
+
+## Why not Docker (and don't let anyone relitigate it)
+
+Docker was tried first and is a dead end on this hardware. The daemon plus per-container library duplication costs several hundred MB of the 8 GB before any model loads; the container boundary prevents the three services from sharing one toolchain and one copy of every CUDA library; and the combined footprint pushed the box into a zram swap spiral where the TTS got OOM-killed and the machine required a power reset. On a device where the OS and the GPU *share* one small RAM pool, container isolation buys nothing (single tenant, single purpose) and costs the one resource that is scarce. Native systemd units with `MemorySwapMax=0` are the difference between "fits" and "doesn't".
+
+## Process notes from building this
+
+- **Measure first, theorize second.** Several "obvious" conclusions were wrong on the box: int8 quantization slowed TTS down; a smaller LLM quant beat a larger one on accuracy; a service that was "stopped" still held ~2 GB. Every configuration claim in the README is backed by a measurement on the actual hardware.
+- **Benchmark the candidates head-to-head before committing** (same battery, same knobs), then pick — and archive the losing measurements with their settings so the decision is reproducible. `bench/results/` and the quant table above exist so nobody has to rerun the shootout.
+- **Use a memory watchdog when pushing the RAM envelope**, and reboot for clean baselines between runs.
+- **Keep infrastructure tests cheap and honest**: the self-tests run at every service start and must fail when the service genuinely can't serve. A self-test that passes on a broken stack is worse than none.
+- **Pin everything at the moment it works**, including model hashes from the exact bytes you validated — HF "main" branches move.
