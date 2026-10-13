@@ -1,0 +1,45 @@
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index 0714ae3bb..744273c88 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -283,6 +283,23 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type
+ 
+ // Host function: returns the max batch size for the current arch+type at runtime.
+ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
++    // SUPER_SOAKER_ORIN_PATCH: Orin (SM 8.7) MMQ-ids beats MMVQ-ids at batch >= 2
++    // for every MMQ-supported type (same conclusion as upstream PR #28285 for
++    // K-quants; IQ/simple quants carry the same per-column dequant tax in MMVQ).
++    if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_ORIN) {
++        switch (type) {
++            case GGML_TYPE_IQ1_S:   case GGML_TYPE_IQ1_M:
++            case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
++            case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S:
++            case GGML_TYPE_IQ4_XS:  case GGML_TYPE_IQ4_NL:
++            case GGML_TYPE_Q4_0:    case GGML_TYPE_Q4_1:   case GGML_TYPE_Q8_0:
++            case GGML_TYPE_Q2_K:    case GGML_TYPE_Q3_K:   case GGML_TYPE_Q4_K:
++            case GGML_TYPE_Q5_K:    case GGML_TYPE_Q6_K:
++                return 1;
++            default:
++                return MMVQ_MAX_BATCH_SIZE;
++        }
++    }
+     // NVIDIA: P100, Volta, Ada Lovelace, and Blackwell always use MMVQ for MUL_MAT_ID.
+     if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
+         if (cc == GGML_CUDA_CC_PASCAL || cc == GGML_CUDA_CC_VOLTA || cc >= GGML_CUDA_CC_ADA_LOVELACE) {
+@@ -360,6 +377,16 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
+             case GGML_TYPE_Q4_K:
+             case GGML_TYPE_Q5_K:
+             case GGML_TYPE_Q6_K:
++            case GGML_TYPE_IQ2_XXS:
++            case GGML_TYPE_IQ2_XS:
++            case GGML_TYPE_IQ2_S:
++            case GGML_TYPE_IQ3_XXS:
++            case GGML_TYPE_IQ3_S:
++            case GGML_TYPE_IQ4_XS:
++            case GGML_TYPE_IQ4_NL:
++            case GGML_TYPE_Q4_0:
++            case GGML_TYPE_Q4_1:
++            case GGML_TYPE_Q8_0:
+                 return ne11 <= 1;
+             default:
+                 return ne11 <= MMVQ_MAX_BATCH_SIZE;

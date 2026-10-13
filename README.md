@@ -103,7 +103,7 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 |---|---|---|---|---|---|---|---|
 | **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | **0.07 s** | **0.45 s** | **55.9 w/s** | 85% | 70% | snappiest; weak at multi-digit arithmetic and letter-counting |
 | **lfm2.5-2.6b-reasoning** | LFM2.5-2.6B QAD-Q4_0 | 0.32 s | 2.28 s | 12.4 w/s | 90% | 70% | facts always right; verbose for voice; never over-triggers |
-| **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 0.50 s | 4.67 s | 10.5 w/s | **100%** | **90%** | MoE (8.3B total / 1.5B active); best accuracy; slowest replies |
+| **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 0.50 s | 2.64 s | 10.5 w/s | **100%** | **90%** | MoE (8.3B total / 1.5B active); best accuracy; optimized spec stack (below) |
 
 Measured on the box, identical battery/prompt; tool scenarios include no-tool negatives (small talk, nonsense, goodbye) that punish models which hallucinate device actions. All three pair their target GGUF with a DSpark-Q8_0 speculative drafter (~29–30% of drafted tokens accepted). The 1.2B and 2.6B share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice. The 8B is the only profile that never gets a tool call wrong on this battery.
 
@@ -136,6 +136,19 @@ sudo ./bootstrap.sh --model lfm2.5-2.6b-reasoning
 On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct QAD-Q4_0 + DSpark-Q8_0, LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0, or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0. You can also edit `LLM_MODEL=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `REASONING_BUDGET`, `MODEL_PATH`, ...) still win over the profile defaults.
 
 All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=128` for the two reasoning profiles (the 1.2B chat profile runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable.
+
+### 8B-A1B performance optimization (measured, see notes/04)
+
+The 8B profile ships an optimized speculative-decoding stack: `--spec-type draft-dspark,ngram-mod --spec-draft-n-max 5 --spec-draft-p-min 0.4`, plus a llama.cpp kernel patch (`deps/patches/mmvq-orin-crossover.patch`) that extends the Orin MMVQ→MMQ crossover (upstream PR #28285 covered K-quants only) to IQ/simple quants. Measured effects on the frozen battery (accuracy unchanged: tool 100%, quality 90%):
+
+| metric | before (n_max 9, plain dspark) | after (optimized stack) | gain |
+|---|---|---|---|
+| latency probe (repeated utterance) | 4.67 s | 2.64 s | 1.77x |
+| unique tool scenarios (20) | 4.29 s | 3.88 s | 1.10x |
+| free-form varied decode | 35 tok/s | 38 tok/s | 1.10x |
+| templated voice traffic | 35 tok/s | 119–175 tok/s | 3.4–5x |
+
+The spread is the honest story: batch-1 GEMVs on this GPU stream at a fixed ~24% of LPDDR5 bandwidth, so non-spec decode is capped near 35–48 tok/s (1.3–1.6x) by bytes-per-token. Speculative decoding escapes that cap by batching verify steps into fat GEMMs — but on a 4-of-32 MoE the expert-union traffic saturates with draft length, so the gain needs high draft acceptance. Novel free-form speech accepts ~2–3 drafted tokens/step (the drafter was distilled against an F16 target — llama.cpp issue #25618); templated HA traffic (fixed tool JSON, repeated phrasing) accepts 5+ and reaches the 119–175 tok/s ceiling. In practice a voice assistant lives between the two columns. **2–3x on repetitive traffic, ~1.1x on novel speech; 4–5x only when content is highly predictable.** Deep dive, rejected experiments (custom quants, TQ2_0, F16 drafter, micro knobs) and the constraint analysis: `notes/04-decode-optimization-research.md`.
 
 ## Design tradeoffs: quality vs intelligence vs speed
 

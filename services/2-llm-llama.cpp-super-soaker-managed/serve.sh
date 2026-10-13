@@ -58,6 +58,14 @@ case "$LLM_MODEL" in
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-8B-A1B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
     REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    # optimized spec stack (measured 2026-10-13, notes/04):
+    # n_max=5 (short blocks win at MoE verify-traffic saturation),
+    # p-min 0.4 (DSpark confidence truncation), ngram-mod (free accepted
+    # tokens on templated HA tool-JSON/phrasing — no cost on novel speech).
+    SPEC_TYPE="${SPEC_TYPE:-draft-dspark,ngram-mod}"
+    SPEC_N_MAX="${SPEC_N_MAX:-5}"
+    SPEC_P_MIN="${SPEC_P_MIN:-0.4}"
+    SPEC_EXTRA="${SPEC_EXTRA:---spec-draft-p-min ${SPEC_P_MIN}}"
     ;;
   *) echo "[super-soaker-llm] ERROR: unknown LLM_MODEL '$LLM_MODEL'" >&2; exit 1 ;;
 esac
@@ -106,10 +114,15 @@ if [ "$USE_SPEC" = "1" ]; then
         log "ERROR: SPEC=$SPEC but draft not found: $DRAFT_PATH"; exit 1
     fi
     CMD+=(-md "$DRAFT_PATH"
-          --spec-type draft-dspark
-          --spec-draft-n-max 9
+          --spec-type "${SPEC_TYPE:-draft-dspark}"
+          --spec-draft-n-max "${SPEC_N_MAX:-9}"
           --spec-draft-n-min 0)
-    log "speculative decoding: ON (draft: $DRAFT_PATH)"
+    if [ -n "${SPEC_EXTRA:-}" ]; then
+        # shellcheck disable=SC2206
+        SPEC_EXTRA_ARR=($SPEC_EXTRA)
+        CMD+=("${SPEC_EXTRA_ARR[@]}")
+    fi
+    log "speculative decoding: ON (draft: $DRAFT_PATH, type: ${SPEC_TYPE:-draft-dspark}, n-max: ${SPEC_N_MAX:-9})"
 else
     log "speculative decoding: OFF"
 fi

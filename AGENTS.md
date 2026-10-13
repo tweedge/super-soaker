@@ -56,6 +56,17 @@ Prefer **Unsloth or LiquidAI official** GGUFs. Third-party requantized uploads v
 - **Bounded reasoning (`--reasoning-budget 128`)** keeps reply latency predictable. The 8B-A1B is reasoning-*only* — it always thinks first — so the budget is what makes it voice-usable at all.
 - **Words/s vs tok/s**: the battery reports words/s; llama-server logs tok/s. For English text, roughly 1 w/s ≈ 1.3–1.5 t/s. Compare like with like.
 
+## The 8B-A1B decode-optimization campaign (2026-10, full log in notes/04)
+
+- **Batch-1 GEMVs stream at a fixed efficiency on this GPU**: ~24% of LPDDR5 peak for IQ-LUT quants (IQ2_XXS/IQ3_XXS/IQ2_S), ~37% for block quants (q2_0/q4_0/q2_k). Dequant cost hides under memory stalls at batch 1 (PR #26705 shows the same on DGX Spark); speed ≈ bytes/token ÷ that rate. This is why "just requantize lighter" only buys 1.3–1.6x and why the oQ4-style "smaller is faster" intuition is wrong here.
+- **The quality cliff is expert-type + protection, and it is sharp**: IQ2_XXS/IQ3_XXS experts → 100% tool acc; Q2_K experts → 80%; Q2_0/TQ2_0 → destroyed. Attention/embeddings below Q5_K/Q6_K → tool emission breaks ("no tool call" failures) before factual quality does. If you change the quant recipe, gate against `bench/ha_battery.json` — synthetic perplexity will not tell you this.
+- **Spec-decode is the only escape from the batch-1 cap — via acceptance.** Verify batches become fat GEMMs and amortize the tied 128K output head. But 4-of-32 MoE verify traffic saturates (union ≈ 23–27/32 experts at k=9), so gains need ≥5 accepted tokens/step. Shorter n_max (5, not the trained 9) wins at low acceptance. `ngram-mod` combined with `draft-dspark` (comma-separated `--spec-type`) adds free accepted tokens on templated traffic — 3.4–5x there, ~1.1x on novel speech.
+- **The DSpark drafter was distilled against an F16 target** (llama.cpp #25618): on quantized targets it drifts on novel content (acceptance 2–3/step vs Liquid's 6.95/10 on F16). F16 drafter is a net loss on iGPU (dequant cost > acceptance gain — Strix-Halo datapoint in PR #27383 agrees). Higher fidelity on the drafter-read layers (2/6/10/14/18) helps templated content only, and costs RAM/quality.
+- **A local mmvq.cu patch** (`deps/patches/mmvq-orin-crossover.patch`, applied by `deps/build-llamacpp.sh`) extends the Orin MMVQ→MMQ crossover to IQ/simple quants — upstream PR #28285 covered K-quants only. +4–10% on verify batches, no batch-1 change. Submit upstream if it survives longer.
+- **Custom quants live in `scripts/quantize-8b-variants.sh`** (llama-quantize `--tensor-type` per-tensor recipes + unsloth imatrix; watch first-match-wins pattern ordering). All 11 variants were built and gated on the box; none beat UD-IQ2_M on tool accuracy. The BF16 source + imatrix are not fetched by default (17 GB).
+- **Micro-knobs that did NOT help**: `GGML_CUDA_MMQ_PREC=q4`, `GGML_CUDA_PDL=1`, `--poll 1` (busy-wait contends with GPU sync on 6 A78AE cores — measurably worse), `--ctx-checkpoints 0`. Do not re-run these without a reason.
+- **Measure acceptance, not just tok/s**: `curl /metrics | grep spec_decode` (drafted/accepted/drafts counters + per-position breakdown) is the fastest diagnostic for "why did spec stop helping".
+
 ## Jetson-specific things to keep in mind
 
 - **Unified memory**: the GPU is an iGPU with no dedicated VRAM. "GPU memory" is system RAM, and the driver's allocations live in kernel space where `docker stats`/RSS can't see them. Budget in terms of board RAM, always.

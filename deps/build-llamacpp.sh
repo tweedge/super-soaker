@@ -36,6 +36,13 @@ git fetch origin --tags --force
 git checkout --force "${LLAMA_COMMIT}"
 git submodule update --init --recursive
 
+# super-soaker local patch: Orin (SM 8.7) MMVQ->MMQ crossover for IQ/simple
+# quants (upstream PR #28285 covered K-quants only). Idempotent.
+PATCH_FILE="$(dirname "${BASH_SOURCE[0]}")/patches/mmvq-orin-crossover.patch"
+if [ -f "$PATCH_FILE" ] && ! grep -q "SUPER_SOAKER_ORIN_PATCH" ggml/src/ggml-cuda/mmvq.cu; then
+    git apply "$PATCH_FILE" || { echo "WARN: mmvq patch did not apply" >&2; }
+fi
+
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_COMPILER="${CUDACXX}" \
