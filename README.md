@@ -65,23 +65,23 @@ Component costs (measured on the box, services warm, MAXN_SUPER + jetson_clocks)
 | stage | cost | note |
 |---|---|---|
 | STT finalize (3 s utterance) | ~0.3–1.0 s | whisper tiny/en int8, CUDA; scales with utterance length |
-| LLM TTFT (warm) | 0.4–0.5 s | prompt-cache hit on the HA Assist prefix |
-| LLM decode | 31–34 tok/s | ~17–24 tok/s accepted with DSpark draft |
+| LLM TTFT (warm) | 0.3–0.5 s | prompt-cache hit on the HA Assist prefix |
+| LLM decode | 42–90 tok/s (battery mean, by profile) | spec stack; templated traffic reaches 119–238 tok/s |
 | first sentence → TTS | ~8–12 tokens | TTS starts at the first sentence boundary |
 | TTS time-to-first-chunk | 0.48–0.68 s | Kokoro fp16, CUDA, Wyoming streaming |
 | TTS sustained | 5.2–7.1 s audio / s wall | ~5× faster than playback — never the bottleneck |
 
 ### Worked example — typical short answer
 
-"One or two sentences" (25 tokens of text, ~6 s of reply audio):
+"One or two sentences" (25 tokens of text, ~6 s of reply audio), derived from the measured component costs on the optimized `lfm2.5-2.6b-reasoning` profile:
 
 | milestone | time after user stops speaking |
 |---|---|
 | STT transcript ready | ~0.5 s |
-| LLM first token (warm) | ~1.0 s |
-| first sentence complete (TTS can start) | ~1.3–1.5 s |
-| **reply-speech starts** | **~1.8–2.2 s** |
-| **reply-speech completes** | **~8 s** (speech-start + 6 s of playback) |
+| LLM first token (warm) | ~0.8 s |
+| first sentence complete (TTS can start) | ~1.0 s |
+| **reply-speech starts** | **~1.5–1.7 s** |
+| **reply-speech completes** | **~7.5 s** (speech-start + 6 s of playback) |
 
 Speech-completion is dominated by *playback duration of the answer*, not synthesis: TTS generates ~5× faster than real time and streams sentence-by-sentence, so audio production never lags the speaker. Longer answers extend speech-complete proportionally but do not delay speech-start.
 
@@ -89,7 +89,7 @@ Speech-completion is dominated by *playback duration of the answer*, not synthes
 
 | path | latency |
 |---|---|
-| warm (prompt cache hit, short reply) | speech starts ~2 s; completes ~answer length later |
+| warm (prompt cache hit, short reply) | speech starts ~1.5 s; completes ~answer length later |
 | cold (13.7k-token prompt, cache miss) | LLM prefill ~15.1 s (1007 tok/s) before first token; speech starts ~17 s |
 | service restart (model reload) | +2–4 s once, self-test then ready |
 
@@ -97,21 +97,40 @@ The prompt cache (`--cache-reuse 256`) is what keeps the warm path warm: the sta
 
 ## Model choice: three serving profiles, one battery
 
-Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios from the HA Assist API surface + 10 factual/brevity scenarios, run identically against each config; raw results in `bench/results/`):
+Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios from the HA Assist API surface + 10 factual/brevity scenarios, run identically against each config). **All performance numbers are indexed on tok/s** (the server's own decode timing); words/s is a prose artifact and is no longer reported. Raw results in `bench/results/` (`ha_A`–`ha_I`).
 
-| profile | model | warm TTFT | avg reply | decode | tool acc | quality | notes |
-|---|---|---|---|---|---|---|---|
-| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | **0.07 s** | **0.45 s** | **55.9 w/s** | 85% | 70% | snappiest; weak at multi-digit arithmetic and letter-counting |
-| **lfm2.5-2.6b-reasoning** | LFM2.5-2.6B QAD-Q4_0 | 0.32 s | 2.28 s | 12.4 w/s | 90% | 70% | facts always right; verbose for voice; never over-triggers |
-| **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 0.50 s | 2.64 s | 10.5 w/s | **100%** | **90%** | MoE (8.3B total / 1.5B active); best accuracy; optimized spec stack (below) |
+### Performance as shipped (tok/s, after optimization)
 
-Measured on the box, identical battery/prompt; tool scenarios include no-tool negatives (small talk, nonsense, goodbye) that punish models which hallucinate device actions. All three pair their target GGUF with a DSpark-Q8_0 speculative drafter (~29–30% of drafted tokens accepted). The 1.2B and 2.6B share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice. The 8B is the only profile that never gets a tool call wrong on this battery.
+| profile | model | novel tok/s | templated tok/s | battery mean tok/s | warm TTFT | avg reply | tool acc | quality acc |
+|---|---|---|---|---|---|---|---|---|
+| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | ~70 (decode probe) | — | **90.0** | **0.18 s** | **0.51 s** | 85% | 70% |
+| **lfm2.5-2.6b-reasoning** | LFM2.5-2.6B QAD-Q4_0 | **59.9** | **237.6** | 63.2 | 0.32 s | **1.38 s** | 90% | 80% |
+| **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 38.1 | 119 | 41.6 | 0.51 s | 3.60 s | **95–100%** | **90%** |
 
-**Why lfm2.5-1.2b-chat is the default:** benchmark-measured ~2x lower end-to-end latency than the 2.6B (0.45 s vs 2.28 s average reply) and ~10x lower than the 8B, with tool accuracy close to the 2.6B (85% vs 90%). What it gives up: self-corrected arithmetic and letter-counting (no reasoning pass to check itself). A fourth profile — the 2.6B with reasoning disabled — was benchmarked and rejected: it over-triggers tools on non-commands, keeps the 2.6B memory cost, and is still 2x slower than the 1.2B.
+"Novel" = 12 unique prompts (free-form speech proxy); "templated" = identical-utterance probe (HA boilerplate ceiling — fixed tool JSON, repeated phrasing); "battery mean" = per-scenario decode tok/s across all 30 frozen scenarios. Battery accuracy is n=1 per scenario at temp 0.1, so it wobbles ±5–10% between runs (the 8B's archived `ha_D`/`ha_H` runs scored 100%/90%); tok/s and latency are stable. The 1.2B and 2.6B share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice.
 
-**Pick lfm2.5-2.6b-reasoning if** the assistant must be disciplined about tool calls and facts (the agentic profile), and ~2 s replies are acceptable — the tradeoff this project historically ran with.
+### super-soaker optimized vs original config (same battery, same box)
 
-**Pick lfm2.5-8b-a1b-reasoning if** tool-call and answer correctness matter more than reply latency. The 8B-A1B is a reasoning-only MoE: it spends its 1.5B active parameters on a chain-of-thought pass before answering, so replies take ~4.7 s on average (vs 2.3 s for the 2.6B) but it is the only profile here that scores 100% on tool accuracy and 90% on factual quality. It also answers some scenarios the dense models simply cannot (reliable letter-counting, multi-digit arithmetic self-checks).
+| profile | metric | original | optimized | gain |
+|---|---|---|---|---|
+| **lfm2.5-2.6b-reasoning** | battery mean tok/s | 57.7 | 63.2 | 1.10x |
+| | novel tok/s | 55.3 | 59.9 | 1.08x |
+| | templated tok/s | 59.4 | **237.6** | **4.0x** |
+| | avg reply | 2.46 s | **1.38 s** | **1.78x** |
+| | accuracy | 90% / 80% | 90% / 80% | unchanged |
+| **lfm2.5-8b-a1b-reasoning** | battery mean tok/s | 39.0 | 41.6 | 1.07x |
+| | novel tok/s | 34.6 | 38.1 | 1.10x |
+| | templated tok/s | 34.6 | **119** | **3.4x** |
+| | avg reply | 4.28 s | **3.60 s** | 1.19x |
+| | accuracy | 90% / 80% | 95% / 90% | equal or better |
+
+The spread between "novel" and "templated" is the honest story of both campaigns: real assistant traffic (fixed tools, familiar phrasing) sits between the columns, closer to templated the more the home vocabulary repeats. Both optimizations keep the battery's accuracy at or above the original — no quality was traded.
+
+**Why lfm2.5-1.2b-chat is the default:** fastest on every latency axis (0.51 s avg reply, 90 tok/s battery mean) with tool accuracy close to the 2.6B (85% vs 90%). What it gives up: self-corrected arithmetic and letter-counting (no reasoning pass to check itself). A fourth profile — the 2.6B with reasoning disabled — was benchmarked and rejected: it over-triggers tools on non-commands and keeps the 2.6B memory cost.
+
+**Pick lfm2.5-2.6b-reasoning if** the assistant must be disciplined about tool calls and facts (the agentic profile). After optimization its replies take 1.38 s on average (was 2.28 s historically) — within striking distance of the 1.2B — and repetitive voice traffic reaches ~238 tok/s. Tool 90%, quality 80%.
+
+**Pick lfm2.5-8b-a1b-reasoning if** tool-call and answer correctness matter more than reply latency. The 8B-A1B is a reasoning-only MoE: it spends its 1.5B active parameters on a chain-of-thought pass before answering, so replies take ~3.6 s on average, but it is the strongest profile on tool accuracy (95–100%) and factual quality (90%). It also answers some scenarios the dense models cannot (reliable letter-counting, multi-digit arithmetic self-checks).
 
 **Only one LLM fits at a time:** measured 7.32/7.62 GB with both dense LLMs resident (105 MB free) — below any safe margin. The 8B-A1B is worse still: even at IQ2-class quants it needs ~4.3 GB of RAM by itself (see below). Run one.
 
@@ -137,18 +156,30 @@ On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`)
 
 All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=128` for the two reasoning profiles (the 1.2B chat profile runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable.
 
-### 8B-A1B performance optimization (measured, see notes/04)
+### Performance optimization campaigns (measured)
 
-The 8B profile ships an optimized speculative-decoding stack: `--spec-type draft-dspark,ngram-mod --spec-draft-n-max 5 --spec-draft-p-min 0.4`, plus a llama.cpp kernel patch (`deps/patches/mmvq-orin-crossover.patch`) that extends the Orin MMVQ→MMQ crossover (upstream PR #28285 covered K-quants only) to IQ/simple quants. Measured effects on the frozen battery (accuracy unchanged: tool 100%, quality 90%):
+Both reasoning profiles ship an optimized speculative-decoding stack plus a llama.cpp kernel patch (`deps/patches/mmvq-orin-crossover.patch`) extending the Orin MMVQ→MMQ crossover (upstream PR #28285 covered K-quants only) to IQ/simple quants (+4–10% on verify batches). The dense 2.6B and the 8B-A1B MoE need *different* spec tuning — same drafter, opposite economics:
 
-| metric | before (n_max 9, plain dspark) | after (optimized stack) | gain |
+| knob | lfm2.5-2.6b-reasoning (dense) | lfm2.5-8b-a1b-reasoning (MoE) | why |
 |---|---|---|---|
-| latency probe (repeated utterance) | 4.67 s | 2.64 s | 1.77x |
-| unique tool scenarios (20) | 4.29 s | 3.88 s | 1.10x |
-| free-form varied decode | 35 tok/s | 38 tok/s | 1.10x |
-| templated voice traffic | 35 tok/s | 119–175 tok/s | 3.4–5x |
+| `--spec-type` | `draft-dspark,ngram-mod` | `draft-dspark,ngram-mod` | ngram adds free accepted tokens on templated traffic, costs nothing on novel |
+| `--spec-draft-n-max` | 7 | 5 | dense verify is cheap → longer blocks pay; MoE expert-union traffic saturates with block length → shorter wins |
+| `--spec-draft-p-min` | off (default 0) | 0.4 | confidence truncation HURTS dense (loses accepted tokens for nothing) but helps MoE (prunes low-confidence tails that cost full expert traffic) |
+| drafter quant | Q8_0 | Q8_0 | acceptance is drafter-invariant (F16/Q4_K/Q8_0 all within noise) — the target distribution is the limiter; Q8_0 wins on cost |
+| target quant | QAD-Q4_0 | UD-IQ2_M | higher-fidelity targets do NOT buy acceptance (measured Q4_K_M→Q8_0: flat) and cost raw speed |
 
-The spread is the honest story: batch-1 GEMVs on this GPU stream at a fixed ~24% of LPDDR5 bandwidth, so non-spec decode is capped near 35–48 tok/s (1.3–1.6x) by bytes-per-token. Speculative decoding escapes that cap by batching verify steps into fat GEMMs — but on a 4-of-32 MoE the expert-union traffic saturates with draft length, so the gain needs high draft acceptance. Novel free-form speech accepts ~2–3 drafted tokens/step (the drafter was distilled against an F16 target — llama.cpp issue #25618); templated HA traffic (fixed tool JSON, repeated phrasing) accepts 5+ and reaches the 119–175 tok/s ceiling. In practice a voice assistant lives between the two columns. **2–3x on repetitive traffic, ~1.1x on novel speech; 4–5x only when content is highly predictable.** Deep dive, rejected experiments (custom quants, TQ2_0, F16 drafter, micro knobs) and the constraint analysis: `notes/04-decode-optimization-research.md`.
+Measured campaign results (tok/s, frozen battery + bench harness):
+
+| metric | 2.6B original → optimized | 8B original → optimized |
+|---|---|---|
+| raw batch-1 decode | 30.5 → 30.5 (1.0x) | 35.5 → 35.5 (1.0x) |
+| novel speech | 55.3 → 59.9 (1.08x) | 34.6 → 38.1 (1.10x) |
+| templated voice traffic | 59.4 → **237.6 (4.0x)** | 34.6 → **119 (3.4x)** |
+| battery mean tok/s | 57.7 → 63.2 (1.10x) | 39.0 → 41.6 (1.07x) |
+| battery avg reply | 2.46 s → **1.38 s (1.78x)** | 4.28 s → 3.60 s (1.19x) |
+| battery accuracy | 90/80 → 90/80 | 90/80 → 95/90 |
+
+Why the spread: batch-1 GEMVs on this GPU stream at a fixed ~24% (IQ-LUT quants) or ~37% (block quants) of LPDDR5 bandwidth, so non-spec decode is capped by bytes-per-token (30–48 tok/s on these models). Speculative decoding escapes that cap by turning hundreds of skinny GEMVs into fat verify GEMMs — but only accepted tokens count. Dense verify reads weights once per block (break-even ≈ 1.2 accepted/step — every acceptance point is profit), while 4-of-32 MoE verify traffic saturates with block length (needs 5+). Acceptance itself is capped at ~2.3–3.5/step on novel speech for both models: the DSpark drafter was distilled against an F16 target and drifts on quantized targets (llama.cpp issue #25618) — measured invariant across drafter quants and target quants. Templated HA traffic accepts 5+ and hits the ceilings above. Full logs, rejected experiments (F16 drafter, p-min, TQ2_0, custom quants, micro knobs, target-fidelity sweeps) and the constraint analyses: `notes/04-decode-optimization-research.md` (8B) and `notes/05-2.6b-optimization.md` (2.6B).
 
 ## Design tradeoffs: quality vs intelligence vs speed
 
@@ -160,7 +191,7 @@ The guiding rule: **maximum performance inside a hard 8 GB RAM envelope, while t
 |---|---|---|---|
 | model size | 1.2B / 2.6B / 8B-A1B (profile) | 7B dense, 20B+ | the three profiles are the LFM2.5 sizes that fit alongside STT+TTS; dense 8B-class weights do not fit at usable quants (see quant hunt below) |
 | target quant | QAD-Q4_0 (dense), UD-IQ2_M (8B-A1B) | Q4_K_M, Q5_K_M for the 8B | QAD (quantization-aware distill) is LiquidAI's own quality-preserving recipe; for the 8B-A1B MoE only IQ2-class quants fit — Unsloth's UD-IQ2_M was the measured winner of a four-quant shootout |
-| draft model | DSpark-Q8_0 (on) | no draft, or Q4 draft | spec decoding raises accepted decode to ~1.5–2.2× with *identical output distribution* (quality-neutral speed); Q8_0 draft is more accurate than Q4, and its RAM cost is affordable (0.35–0.36 GB) |
+| draft model | DSpark-Q8_0 (on) | no draft, F16/Q4 draft | spec decoding is the one lever past the batch-1 streaming cap (measured up to 4.0x on templated traffic, quality-neutral); acceptance is drafter-quants-invariant so Q8_0 wins on cost; F16 drafter is a measured net loss on iGPU |
 | KV cache | q8_0 @ 32k ctx | f16 | halves KV RAM with no observed quality hit; keeps the long HA prompt + history in context instead of truncating it (intelligence win) |
 | reasoning budget | 128 tokens | 0 / unlimited | bounded scratch thinking: answers keep some reasoning quality, latency stays predictable; unlimited thinking would blow the reply budget |
 | runtime | llama.cpp, single slot | vLLM, batching | vLLM's pool + scheduler overhead measured 2.8–3.3 GB earlier; single-caller makes batching pure loss. `FA_ALL_QUANTS` + CUDA graphs recover the speed instead |
@@ -294,7 +325,7 @@ Layout on disk:
 
 ## Benchmarks
 
-The profile-comparison battery lives in `bench/ha_benchmark.py` + `bench/ha_battery.json` (30 scenarios: 20 tool + 10 quality, identical prompts per profile). Archived results in `bench/results/`: `ha_A-1.2b-noreason.json`, `ha_B-2.6b-noreason.json`, `ha_C-2.6b-reason.json`, `ha_D-8b-reason.json`. To re-run against the live service:
+The profile-comparison battery lives in `bench/ha_benchmark.py` + `bench/ha_battery.json` (30 scenarios: 20 tool + 10 quality, identical prompts per profile). Per-scenario and decode results carry **tok/s** (`tok_s`, from the server's own `timings.predicted_per_second`) alongside latency. Archived results in `bench/results/`: `ha_A`–`ha_C` (pre-optimization era, words/s), `ha_D` (8B original config), `ha_E`/`ha_F` (2.6B original/optimized), `ha_G`/`ha_H` (8B original/optimized), `ha_I` (1.2B as shipped). To re-run against the live service:
 
 ```bash
 python3 bench/ha_benchmark.py --base-url http://127.0.0.1:8080 \

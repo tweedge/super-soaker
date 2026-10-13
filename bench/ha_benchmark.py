@@ -96,6 +96,7 @@ def chat_plain(base_url, payload, timeout=180):
     total = time.perf_counter() - t0
     msg = (resp.get("choices") or [{}])[0].get("message", {})
     usage = resp.get("usage", {})
+    timings = resp.get("timings") or {}
     return {
         "content": msg.get("content") or "",
         "reasoning": msg.get("reasoning_content") or "",
@@ -105,6 +106,7 @@ def chat_plain(base_url, payload, timeout=180):
             for tc in (msg.get("tool_calls") or [])],
         "total_s": round(total, 3),
         "completion_tokens": usage.get("completion_tokens"),
+        "tok_s": timings.get("predicted_per_second"),
     }
 
 
@@ -259,6 +261,21 @@ def run_battery(args):
             "reasoning_chars": len(reasoning),
             "ttft_s": round(ttft, 3) if ttft else None,
         }
+        # tok/s from the server's own decode timing (non-streaming twin call)
+        try:
+            r = chat_plain(base, {
+                "model": args.model,
+                "messages": [
+                    {"role": "system", "content": battery["chat_system"]},
+                    {"role": "user", "content":
+                     "Explain in exactly 5 sentences how a smart home hub works."},
+                ],
+                "max_tokens": 200, "temperature": 0.7,
+            })
+            results["decode"]["tok_s"] = r["tok_s"]
+            results["decode"]["plain_completion_tokens"] = r["completion_tokens"]
+        except Exception:
+            pass
     except Exception as e:
         results["decode"] = {"error": str(e)[:200]}
 
@@ -282,6 +299,7 @@ def run_battery(args):
             item["content_snip"] = (r["content"] or "")[:80]
             item["completion_tokens"] = r["completion_tokens"]
             item["latency_s"] = r["total_s"]
+            item["tok_s"] = r["tok_s"]
             if expect.get("tool") is None:
                 if r["tool_calls"]:
                     item["pass"] = False
@@ -337,6 +355,7 @@ def run_battery(args):
             item["n_words"] = words(text)
             item["completion_tokens"] = r["completion_tokens"]
             item["latency_s"] = r["total_s"]
+            item["tok_s"] = r["tok_s"]
             fails = []
             if sc.get("max_words") and item["n_words"] > sc["max_words"]:
                 fails.append(f"{item['n_words']} words > {sc['max_words']}")
@@ -362,6 +381,14 @@ def run_battery(args):
         (t.get("reasoning_chars") or 0) > 0 for t in tool_results + q_results)
 
     # ---------------- summary ----------------
+    t_tok = [t["tok_s"] for t in tool_results if t.get("tok_s")]
+    q_tok = [q["tok_s"] for q in q_results if q.get("tok_s")]
+    all_tok = t_tok + q_tok
+    if all_tok:
+        results["tok_s_mean"] = round(sum(all_tok) / len(all_tok), 1)
+        results["tok_s_tool_mean"] = round(sum(t_tok) / len(t_tok), 1) if t_tok else None
+        results["tok_s_quality_mean"] = round(sum(q_tok) / len(q_tok), 1) if q_tok else None
+
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, "w") as f:
@@ -371,8 +398,12 @@ def run_battery(args):
     print(f"  latency   : cold TTFT {lat.get('cold_ttft_s')}s | warm TTFT "
           f"{lat.get('warm_ttft_s')}s | avg total {lat.get('total_avg_s')}s")
     d = results.get("decode", {})
-    print(f"  decode    : {d.get('words_per_s')} words/s "
+    print(f"  decode    : {d.get('tok_s')} tok/s | {d.get('words_per_s')} words/s "
           f"(reasoning {d.get('reasoning_chars', 0)} chars)")
+    if all_tok:
+        print(f"  tok/s     : mean {results['tok_s_mean']} "
+              f"(tool {results['tok_s_tool_mean']} / "
+              f"quality {results['tok_s_quality_mean']})")
     print(f"  tool acc  : {results['tool_acc']}%  "
           f"({sum(1 for t in tool_results if t['pass'])}/{len(tool_results)})")
     for t in tool_results:

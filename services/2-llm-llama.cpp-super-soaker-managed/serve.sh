@@ -52,6 +52,12 @@ case "$LLM_MODEL" in
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
     REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    # optimized spec stack (measured 2026-10-13, notes/05): dense verify is
+    # cheap so n_max=7 (not 9) wins and p-min truncation HURTS (unlike MoE);
+    # ngram-mod adds free accepted tokens on templated HA traffic.
+    SPEC_TYPE="${SPEC_TYPE:-draft-dspark,ngram-mod}"
+    SPEC_N_MAX="${SPEC_N_MAX:-7}"
+    SPEC_EXTRA="${SPEC_EXTRA:-}"
     ;;
   lfm2.5-8b-a1b-reasoning)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-8B-A1B-UD-IQ2_M.gguf}"
