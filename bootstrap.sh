@@ -18,13 +18,15 @@
 #   --no-reboot    do not reboot at the end (services start anyway)
 #   --force-jobs   allow JOBS>2 (dangerous on 8 GB devices — see below)
 #
-#   --model {lfm2.5-1.2b-chat|lfm2.5-1.2b-reasoning|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning}
-#                                         default lfm2.5-1.2b-chat
+#   --model {fast|balanced|thorough}      default balanced
+#                                         fast      = LFM2.5-1.2B-Instruct, no
+#                                                     reasoning (lowest latency)
+#                                         balanced  = LFM2.5-2.6B + reasoning
+#                                         thorough  = LFM2.5-8B-A1B MoE + reasoning
 #   --reasoning-budget {N|off|on|auto}    thinking token budget; N caps
 #                                         thinking at N tokens (0 = off).
-#                                         Defaults per model: 0 for
-#                                         lfm2.5-1.2b-chat, 128 for the
-#                                         reasoning profiles.
+#                                         Defaults per model: 0 for fast,
+#                                         128 for balanced and thorough.
 #
 # Build parallelism is RAM-critical: the compilers (especially nvcc for ONNX
 # Runtime) peak at several GB per thread on an 8 GB Orin Nano Super. JOBS=1 is
@@ -60,7 +62,7 @@ while [ $# -gt 0 ]; do
         --no-reboot)   DO_REBOOT=0 ;;
         --force-jobs)  FORCE_JOBS=1 ;;
         --model)       if [ $# -lt 2 ]; then
-                           echo "--model requires a value: lfm2.5-1.2b-chat, lfm2.5-1.2b-reasoning, lfm2.5-2.6b-reasoning, or lfm2.5-8b-a1b-reasoning" >&2
+                           echo "--model requires a value: fast, balanced, or thorough" >&2
                            exit 2
                        fi
                        LLM_MODEL="$2"; shift ;;
@@ -78,8 +80,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$LLM_MODEL" in
-    ""|lfm2.5-1.2b-chat|lfm2.5-1.2b-reasoning|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) ;;
-    *) die "unknown --model '$LLM_MODEL' (lfm2.5-1.2b-chat | lfm2.5-1.2b-reasoning | lfm2.5-2.6b-reasoning | lfm2.5-8b-a1b-reasoning)" ;;
+    ""|fast|balanced|thorough) ;;
+    *) die "unknown --model '$LLM_MODEL' (fast | balanced | thorough)" ;;
 esac
 if [ -n "$REASONING_BUDGET_ARG" ]; then
     case "$REASONING_BUDGET_ARG" in
@@ -219,9 +221,27 @@ fetch() {
     mv "${dest}.part" "${dest}"
 }
 
-case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
-  lfm2.5-2.6b-reasoning)
-    log "  LLM: LFM2.5-2.6B (agentic reasoning profile)"
+# effective model: explicit flag, else installed value, else default
+LLM_ENV=/etc/super-soaker/llm.env
+EFF_MODEL="$LLM_MODEL"
+if [ -z "$EFF_MODEL" ] && [ -f "$LLM_ENV" ]; then
+    EFF_MODEL=$(grep -E "^LLM_MODEL=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
+fi
+# legacy profile names (pre-rename) still resolve so old env files keep working
+case "$EFF_MODEL" in
+    lfm2.5-1.2b-chat)        EFF_MODEL=fast ;;
+    lfm2.5-2.6b-reasoning)   EFF_MODEL=balanced ;;
+    lfm2.5-8b-a1b-reasoning) EFF_MODEL=thorough ;;
+esac
+EFF_MODEL="${EFF_MODEL:-balanced}"
+case "$EFF_MODEL" in
+    fast|balanced|thorough) ;;
+    *) die "unknown LLM_MODEL '$EFF_MODEL' in ${LLM_ENV} (valid profiles: fast | balanced | thorough)" ;;
+esac
+
+case "$EFF_MODEL" in
+  balanced)
+    log "  LLM: LFM2.5-2.6B QAD-Q4_0 (balanced profile)"
     fetch "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-QAD-Q4_0.gguf" \
           "${MODEL_DIR}/LFM2.5-2.6B-QAD-Q4_0.gguf" \
           "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"
@@ -229,8 +249,8 @@ case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
           "${MODEL_DIR}/LFM2.5-2.6B-DSpark-Q8_0.gguf" \
           "85a98fafdaf1328b6876fd1360d7ed69e74c6cefc14dd07fb6306e1940386c87"
     ;;
-  lfm2.5-8b-a1b-reasoning)
-    log "  LLM: LFM2.5-8B-A1B UD-IQ2_M (MoE reasoning profile)"
+  thorough)
+    log "  LLM: LFM2.5-8B-A1B UD-IQ2_M (thorough profile)"
     # Unsloth UD-IQ2_M is the largest 8B-A1B quant that fits with STT+TTS
     # resident on the 8 GB box without touching swap (see README "Model
     # choice"); the drafter is LiquidAI's official DSpark-Q8_0.
@@ -241,20 +261,8 @@ case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
           "${MODEL_DIR}/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
           "78c6edb3ec97d54fa2e6ec1ba44c394db0a1ae62fcd854d2193389c1295e0a6d"
     ;;
-  lfm2.5-1.2b-reasoning)
-    log "  LLM: LFM2.5-1.2B-Thinking Q8_0 (small reasoning profile)"
-    # LiquidAI's reasoning-focused 1.2B. No dedicated DSpark drafter exists
-    # for Thinking; the LFM2.5-1.2B-Instruct DSpark is the same architecture
-    # family and serves as the drafter (verified on-box — see notes/06).
-    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q8_0.gguf" \
-          "${MODEL_DIR}/LFM2.5-1.2B-Thinking-Q8_0.gguf" \
-          "255f9dcbb8f198c8b6e91b35a63349f062a4902bc58f59312f9b66de45fa9064"
-    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-DSpark-GGUF/resolve/main/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
-          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
-          "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"
-    ;;
-  *)
-    log "  LLM: LFM2.5-1.2B-Instruct Q8_0 (fast chat profile)"
+  fast)
+    log "  LLM: LFM2.5-1.2B-Instruct Q8_0 (fast profile)"
     # Q8_0 chosen over QAD-Q4_0 for fidelity insurance (notes/07: battery
     # accuracy is identical at QAD-Q4_0/Q8_0/F16 — the cap is the model —
     # but Q8_0 removes quant noise from the equation at a modest speed cost).
@@ -314,20 +322,15 @@ write_env() {
 # llm.env reflects the chosen serving profile. It is rewritten when an
 # explicit --model or --reasoning-budget differs from what is installed
 # (those are the supported ways to switch config on an installed node);
-# otherwise existing edits are preserved.
-LLM_ENV=/etc/super-soaker/llm.env
-# effective model: explicit flag, else installed value, else default
-EFF_MODEL="$LLM_MODEL"
-if [ -z "$EFF_MODEL" ] && [ -f "$LLM_ENV" ]; then
-    EFF_MODEL=$(grep -E "^LLM_MODEL=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
-fi
-EFF_MODEL="${EFF_MODEL:-lfm2.5-1.2b-chat}"
+# otherwise existing edits are preserved. EFF_MODEL (resolved before the
+# model fetch above) is the effective profile.
 # sensible thinking-budget defaults per model
 case "$EFF_MODEL" in
-    lfm2.5-1.2b-chat) DEFAULT_BUDGET=0 ;;   # no reasoning in this profile
-    *)                DEFAULT_BUDGET=128 ;; # reasoning profiles
+    fast) DEFAULT_BUDGET=0 ;;      # no reasoning in this profile
+    *)    DEFAULT_BUDGET=128 ;;    # balanced / thorough
 esac
 if [ -f "$LLM_ENV" ]; then
+    cur_model=$(grep -E "^LLM_MODEL=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
     cur_budget=$(grep -E "^REASONING_BUDGET=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
     need_rewrite=0
     if [ -n "$LLM_MODEL" ] && ! grep -q "^LLM_MODEL=$LLM_MODEL$" "$LLM_ENV"; then
@@ -336,6 +339,10 @@ if [ -f "$LLM_ENV" ]; then
     if [ -n "$REASONING_BUDGET_ARG" ] && [ "$cur_budget" != "$REASONING_BUDGET_ARG" ]; then
         need_rewrite=1
     fi
+    # legacy profile name stored in the env file: heal it to the new name
+    case "${cur_model:-}" in
+        lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) need_rewrite=1 ;;
+    esac
     if [ "$need_rewrite" = "1" ]; then
         echo "  updating LLM config (model=$EFF_MODEL): rewriting $LLM_ENV"
         rm -f "$LLM_ENV"

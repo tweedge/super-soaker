@@ -24,25 +24,28 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/super-soaker/llama.cpp/bin/llama-server}"
 SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py}"
-TPL_DIR="${TPL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/templates}"
 
 # ---- model selection --------------------------------------------------------
 # LLM_MODEL picks the serving variant (see README "Model choice"):
-#   lfm2.5-1.2b-chat         LFM2.5-1.2B-Instruct QAD-Q4_0 + its DSpark draft
-#                            (default; fastest chat profile — benchmark-
-#                            measured ~2x lower end-to-end latency)
-#   lfm2.5-2.6b-reasoning    LFM2.5-2.6B QAD-Q4_0 + DSpark draft, reasoning
-#                            budget 128 (the agentic profile: reliable facts,
-#                            never over-triggers, ~2s slower than the 1.2B)
-#   lfm2.5-8b-a1b-reasoning  LFM2.5-8B-A1B (MoE 8.3B/1.5B active), Unsloth
-#                            UD-IQ2_M + DSpark-Q8_0 draft, reasoning budget
-#                            128 (best tool/quality accuracy on this box;
-#                            fits only at IQ2-class quants — see README)
+#   fast      LFM2.5-1.2B-Instruct Q8_0 + its DSpark draft, no reasoning
+#             (lowest latency — benchmark-measured ~2x lower end-to-end)
+#   balanced  LFM2.5-2.6B QAD-Q4_0 + DSpark draft, reasoning budget 128
+#             (default; the agentic profile: reliable facts, never over-
+#             triggers, ~2s slower than the 1.2B)
+#   thorough  LFM2.5-8B-A1B (MoE 8.3B/1.5B active), Unsloth UD-IQ2_M +
+#             DSpark-Q8_0 draft, reasoning budget 128 (best tool/quality
+#             accuracy on this box; fits only at IQ2-class quants — README)
 # Explicit env overrides (MODEL_PATH, DRAFT_PATH, CTX, REASONING_BUDGET) win.
-LLM_MODEL="${LLM_MODEL:-lfm2.5-1.2b-chat}"
+LLM_MODEL="${LLM_MODEL:-balanced}"
+# legacy profile names (pre-rename) still resolve so old env files keep working
+case "$LLM_MODEL" in
+  lfm2.5-1.2b-chat)        LLM_MODEL=fast ;;
+  lfm2.5-2.6b-reasoning)   LLM_MODEL=balanced ;;
+  lfm2.5-8b-a1b-reasoning) LLM_MODEL=thorough ;;
+esac
 M=/var/lib/super-soaker/models
 case "$LLM_MODEL" in
-  lfm2.5-1.2b-chat)
+  fast)
     # Q8_0 target (fidelity insurance — notes/07 proved battery accuracy is
     # identical at QAD-Q4_0/Q8_0/F16; cap is the model). Spec config is the
     # measured plateau top: plain draft-dspark n_max 9 (native drafter,
@@ -53,27 +56,7 @@ case "$LLM_MODEL" in
     CTX="${CTX:-8192}"
     REASONING_BUDGET="${REASONING_BUDGET:-0}"
     ;;
-  lfm2.5-1.2b-reasoning)
-    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-1.2B-Thinking-Q8_0.gguf}"
-    DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf}"
-    CTX="${CTX:-32768}"
-    REASONING_BUDGET="${REASONING_BUDGET:-128}"
-    # The Thinking GGUF embeds the NON-thinking template variant (verified
-    # byte-identical to llama.cpp's LFM2.5-Instruct.jinja), so llama.cpp's
-    # reasoning extraction never engages and thinking leaks into content
-    # (upstream issue #28675). Serve the reasoning-capable family reference
-    # template instead: reasoning_content populates, the budget caps
-    # thinking, content stays clean. Override with TEMPLATE_FILE=...
-    TEMPLATE_FILE="${TEMPLATE_FILE:-$TPL_DIR/LFM2.5-reasoning.jinja}"
-    REASONING_FORMAT="${REASONING_FORMAT:-deepseek}"
-    # optimized spec stack (measured 2026-10-14, notes/06): dense model with
-    # a family-mismatched drafter (low acceptance ~1.5-2.1) => short blocks
-    # win (n_max 5) + ngram-mod; p-min hurts.
-    SPEC_TYPE="${SPEC_TYPE:-draft-dspark,ngram-mod}"
-    SPEC_N_MAX="${SPEC_N_MAX:-5}"
-    SPEC_EXTRA="${SPEC_EXTRA:-}"
-    ;;
-  lfm2.5-2.6b-reasoning)
+  balanced)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-2.6B-QAD-Q4_0.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
@@ -85,7 +68,7 @@ case "$LLM_MODEL" in
     SPEC_N_MAX="${SPEC_N_MAX:-7}"
     SPEC_EXTRA="${SPEC_EXTRA:-}"
     ;;
-  lfm2.5-8b-a1b-reasoning)
+  thorough)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-8B-A1B-UD-IQ2_M.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-8B-A1B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
@@ -99,7 +82,7 @@ case "$LLM_MODEL" in
     SPEC_P_MIN="${SPEC_P_MIN:-0.4}"
     SPEC_EXTRA="${SPEC_EXTRA:---spec-draft-p-min ${SPEC_P_MIN}}"
     ;;
-  *) echo "[super-soaker-llm] ERROR: unknown LLM_MODEL '$LLM_MODEL'" >&2; exit 1 ;;
+  *) echo "[super-soaker-llm] ERROR: unknown LLM_MODEL '$LLM_MODEL' (valid: fast | balanced | thorough)" >&2; exit 1 ;;
 esac
 ALIAS="${ALIAS:-$(basename "$MODEL_PATH" .gguf)}"
 
