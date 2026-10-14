@@ -20,6 +20,11 @@
 #
 #   --model {lfm2.5-1.2b-chat|lfm2.5-1.2b-reasoning|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning}
 #                                         default lfm2.5-1.2b-chat
+#   --reasoning-budget {N|off|on|auto}    thinking token budget; N caps
+#                                         thinking at N tokens (0 = off).
+#                                         Defaults per model: 0 for
+#                                         lfm2.5-1.2b-chat, 128 for the
+#                                         reasoning profiles.
 #
 # Build parallelism is RAM-critical: the compilers (especially nvcc for ONNX
 # Runtime) peak at several GB per thread on an 8 GB Orin Nano Super. JOBS=1 is
@@ -44,6 +49,7 @@ SKIP_BUILD=0
 DO_REBOOT=1
 FORCE_JOBS=0
 LLM_MODEL=""
+REASONING_BUDGET_ARG=""
 
 log() { echo -e "\n[bootstrap] $*"; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
@@ -59,6 +65,14 @@ while [ $# -gt 0 ]; do
                        fi
                        LLM_MODEL="$2"; shift ;;
         --model=*)     LLM_MODEL="${1#--model=}" ;;
+        --reasoning-budget)
+                       if [ $# -lt 2 ]; then
+                           echo "--reasoning-budget requires a value: N tokens, off, on, or auto" >&2
+                           exit 2
+                       fi
+                       REASONING_BUDGET_ARG="$2"; shift ;;
+        --reasoning-budget=*)
+                       REASONING_BUDGET_ARG="${1#--reasoning-budget=}" ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
@@ -67,6 +81,13 @@ case "$LLM_MODEL" in
     ""|lfm2.5-1.2b-chat|lfm2.5-1.2b-reasoning|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) ;;
     *) die "unknown --model '$LLM_MODEL' (lfm2.5-1.2b-chat | lfm2.5-1.2b-reasoning | lfm2.5-2.6b-reasoning | lfm2.5-8b-a1b-reasoning)" ;;
 esac
+if [ -n "$REASONING_BUDGET_ARG" ]; then
+    case "$REASONING_BUDGET_ARG" in
+        off|on|auto) ;;
+        ''|*[!0-9]*) die "--reasoning-budget must be a non-negative integer or off|on|auto (got '$REASONING_BUDGET_ARG')" ;;
+        *) [ "$REASONING_BUDGET_ARG" -le 8192 ] || die "--reasoning-budget too large (max 8192)" ;;
+    esac
+fi
 
 # 1 compile thread by default; >2 needs --force-jobs (deps/limit-jobs.sh).
 JOBS="${JOBS:-1}"
@@ -287,24 +308,47 @@ write_env() {
         echo "  wrote ${file}"
     fi
 }
-# llm.env reflects the chosen serving profile. If the file already exists
-# with a DIFFERENT LLM_MODEL and --model was passed explicitly, overwrite it
-# (that is the supported way to switch variants on an installed node).
+# llm.env reflects the chosen serving profile. It is rewritten when an
+# explicit --model or --reasoning-budget differs from what is installed
+# (those are the supported ways to switch config on an installed node);
+# otherwise existing edits are preserved.
 LLM_ENV=/etc/super-soaker/llm.env
-if [ -n "$LLM_MODEL" ] && [ -f "$LLM_ENV" ] && \
-   ! grep -q "^LLM_MODEL=$LLM_MODEL$" "$LLM_ENV"; then
-    echo "  switching LLM model to $LLM_MODEL: rewriting $LLM_ENV"
-    rm -f "$LLM_ENV"
+# effective model: explicit flag, else installed value, else default
+EFF_MODEL="$LLM_MODEL"
+if [ -z "$EFF_MODEL" ] && [ -f "$LLM_ENV" ]; then
+    EFF_MODEL=$(grep -E "^LLM_MODEL=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
+fi
+EFF_MODEL="${EFF_MODEL:-lfm2.5-1.2b-chat}"
+# sensible thinking-budget defaults per model
+case "$EFF_MODEL" in
+    lfm2.5-1.2b-chat) DEFAULT_BUDGET=0 ;;   # no reasoning in this profile
+    *)                DEFAULT_BUDGET=128 ;; # reasoning profiles
+esac
+if [ -f "$LLM_ENV" ]; then
+    cur_budget=$(grep -E "^REASONING_BUDGET=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
+    need_rewrite=0
+    if [ -n "$LLM_MODEL" ] && ! grep -q "^LLM_MODEL=$LLM_MODEL$" "$LLM_ENV"; then
+        need_rewrite=1
+    fi
+    if [ -n "$REASONING_BUDGET_ARG" ] && [ "$cur_budget" != "$REASONING_BUDGET_ARG" ]; then
+        need_rewrite=1
+    fi
+    if [ "$need_rewrite" = "1" ]; then
+        echo "  updating LLM config (model=$EFF_MODEL): rewriting $LLM_ENV"
+        rm -f "$LLM_ENV"
+    fi
 fi
 write_env "$LLM_ENV" \
     "# super-soaker LLM tuning (see notes/03-final-config.md)" \
     "PORT=8080" "N_BATCH=1024" "UBATCH=256" "KV_TYPE=q8_0" \
     "SPEC=auto" "CACHE_REUSE=256" "PRIO=2" \
     "SELF_TEST=on" \
-    "LLM_MODEL=${LLM_MODEL:-lfm2.5-1.2b-chat}" \
-    "# per-model defaults (CTX, REASONING_BUDGET, model paths) are applied" \
-    "# from LLM_MODEL in serve.sh; override individually below if needed:" \
-    "#CTX=32768" "#REASONING_BUDGET=128"
+    "LLM_MODEL=$EFF_MODEL" \
+    "REASONING_BUDGET=${REASONING_BUDGET_ARG:-$DEFAULT_BUDGET}" \
+    "# per-model defaults (CTX, model paths) are applied from LLM_MODEL in" \
+    "# serve.sh; REASONING_BUDGET above: N caps thinking at N tokens," \
+    "# 0/off disables thinking, on = always think, auto = detect from template." \
+    "#CTX=32768"
 write_env /etc/super-soaker/stt.env \
     "# super-soaker STT tuning" \
     "PORT=10300" "MODEL=tiny" "LANGUAGE=en" "COMPUTE_TYPE=int8" "BEAM_SIZE=5" \

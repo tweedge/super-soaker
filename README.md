@@ -159,7 +159,7 @@ sudo ./bootstrap.sh --model lfm2.5-2.6b-reasoning
 # or: sudo ./bootstrap.sh --model lfm2.5-1.2b-chat (default)
 ```
 
-On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct QAD-Q4_0 + DSpark-Q8_0, LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0, or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0. You can also edit `LLM_MODEL=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `REASONING_BUDGET`, `MODEL_PATH`, ...) still win over the profile defaults.
+On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct QAD-Q4_0 + DSpark-Q8_0, LFM2.5-1.2B-Thinking Q8_0 + Instruct DSpark-Q8_0, LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0, or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0. The thinking budget is set the same way: `sudo ./bootstrap.sh --reasoning-budget 256` (or `off`/`on`/`auto`) — defaults are per model (0 for the no-reasoning chat profile, 128 for the reasoning profiles), and an explicit flag always wins while unpassed values are preserved across re-runs. You can also edit `LLM_MODEL=`/`REASONING_BUDGET=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `MODEL_PATH`, ...) still win over the profile defaults.
 
 All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=128` for the two reasoning profiles (the 1.2B chat profile runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable.
 
