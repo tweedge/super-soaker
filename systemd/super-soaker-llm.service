@@ -1,6 +1,6 @@
 [Unit]
 Description=super-soaker 2/3 LLM: llama.cpp LFM2.5 (profile from /etc/super-soaker/llm.env) (HTTP tcp/8080)
-After=network-online.target super-soaker-clocks.service
+After=network-online.target
 Wants=network-online.target
 [Service]
 Type=simple

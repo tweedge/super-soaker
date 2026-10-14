@@ -27,7 +27,7 @@ That is the whole install. `bootstrap.sh`:
 3. creates two pinned Python venvs (`venv-stt`, `venv-tts`),
 4. downloads models with SHA-256 verification into `/var/lib/super-soaker`,
 5. installs three systemd services (enabled at boot, `Restart=always`, `MemorySwapMax=0` so service pages can never be swapped),
-6. locks power to `MAXN_SUPER` + `jetson_clocks`,
+6. sets power mode `MAXN_SUPER` (clocks boost under load, scale down at idle — nothing is pinned),
 7. waits for each service's built-in self-test to pass, then reboots.
 
 Re-running is safe (idempotent). Flags: `--skip-build` (reuse built wheels), `--no-reboot`, `--force-jobs` (see below), `--model {fast|balanced|thorough}` (default `balanced`; see "Model choice"). Service tuning lives in `/etc/super-soaker/*.env` (written once, preserved across re-runs).
@@ -60,7 +60,7 @@ The pipeline is: **user stops speaking → STT finalizes → LLM generates → T
 - **reply-speech starts** — the first audio sample of the answer is played;
 - **reply-speech completes** — the last sample of the answer finishes.
 
-Component costs (measured on the box, services warm, MAXN_SUPER + jetson_clocks):
+Component costs (measured on the box, services warm, MAXN_SUPER):
 
 | stage | cost | note |
 |---|---|---|
@@ -231,7 +231,7 @@ Net effect: a slightly slower per-token rate than a bigger model would need to b
 |---|---|---|---|
 | packaging | systemd + pinned builds | Docker images | Docker daemon + per-container library copies cost several hundred MB and pushed the box into a swap spiral; native processes share one toolchain and one copy of every library |
 | swap policy | `MemorySwapMax=0` | default swapping | with 8 GB, any swapped service page is latency jitter; nothing may swap, and the budget guarantees nothing has to |
-| power | MAXN_SUPER + jetson_clocks | ondemand clocks | first-token latency depends on sustained clocks; clock ramping is pure loss here |
+| power mode | `MAXN_SUPER` (nvpmodel; clocks un-pinned) | `jetson_clocks` pinning, lower nvpmodel modes | MAXN_SUPER raises the frequency ceilings so decode boosts to max under load (measured: EMC 2.13 → 3.2 GHz, decode 52.8 tok/s unlocked vs 45–56.5 locked); pinning clocks high cost ~1.15 W constant idle power and was removed — an always-on assistant is idle ~99% of the time |
 
 ## RAM budget (measured on the live box, L4T 36.4.4)
 
@@ -255,15 +255,15 @@ Earlier docker-based deployments of this stack did **not** fit: the daemon, per-
 
 ## Power draw (measured, `tegrastats` VDD_IN)
 
-Whole-board input power at `MAXN_SUPER` + `jetson_clocks`, all three services resident (8B-A1B profile, the heaviest config):
+Whole-board input power at `MAXN_SUPER`, clocks un-pinned (VDD_IN min/median/max sampled at 0.5 s, 2026-10-14, balanced profile):
 
 | state | VDD_IN | note |
 |---|---|---|
-| boot idle (services stopped) | ~6.0 W | clocks locked, no work |
-| stack resident, no traffic | ~6.9 W | three models in RAM, GPU idle |
-| LLM decode + TTS synthesis | ~16.5–17 W | sustained, well under the 25 W MAXN_SUPER envelope |
+| boot idle (services stopped) | ~4.8 W | 4.77–4.85 W measured |
+| stack resident, no traffic | ~4.8 W | three models in RAM, GPU idle — resident weights cost almost nothing at idle |
+| LLM decode | ~17 W peak | brief bursts; ~16.5–17 W sustained alongside TTS synthesis, well under the 25 W MAXN_SUPER envelope |
 
-The lighter profiles (`fast`/`balanced`) idle a few hundred mW lower (smaller weights to keep refreshed, less memory pressure) and peak a bit under load. In practice: an always-on voice assistant costs about **7 W idle**, with brief **17 W bursts** during replies. At €0.30/kWh that is roughly €18/year for the compute; the rest of the board (NVMe, display if attached) adds a little. Speech-completion latency, not power, is the binding constraint on this box.
+With the old `jetson_clocks` pinning (EMC held at max, CPU idle states disabled), stack-resident idle measured ~5.95 W — the ~1.15 W the lock burned while doing nothing is why it was removed; decode itself measured the same either way (EMC boosts 2.13 → 3.2 GHz under load). Profile choice barely moves idle power (resident vs services-stopped differed by ~0.04 W in the same session). In practice: an always-on voice assistant costs about **5 W idle**, with brief **17 W bursts** during replies. At €0.30/kWh that is roughly €13/year for the compute; the rest of the board (NVMe, display if attached) adds a little. Speech-completion latency, not power, is the binding constraint on this box.
 
 ## Pointing Home Assistant at it
 
@@ -328,7 +328,7 @@ Layout on disk:
 /opt/super-soaker/          builds, venvs, service code, pinned wheels (cache/)
 /var/lib/super-soaker/      models, whisper hub cache (owned by super-soaker)
 /etc/super-soaker/          per-service env files (llm.env, stt.env, tts.env)
-/etc/systemd/system/        super-soaker-{llm,stt,tts,clocks}.service
+/etc/systemd/system/        super-soaker-{llm,stt,tts}.service
 ```
 
 ## Benchmarks
@@ -353,7 +353,7 @@ Extra GGUFs for sweep matrices can be fetched with `scripts/fetch-models.sh` (re
 ## Development notes
 
 - `notes/` — design notes and the measured migration history (why native, why fp16, why one slot, etc.).
-- `deps/` — the pinned build scripts (`build-llamacpp.sh`, `build-ctranslate2.sh`, `build-onnxruntime.sh`, `lock-clocks.sh`) plus `limit-jobs.sh`, the shared RAM guard that keeps compile parallelism at 1–2 threads. Every dependency is a pinned tag or commit; wheels land in `/opt/super-soaker/cache` for offline rebuilds.
+- `deps/` — the pinned build scripts (`build-llamacpp.sh`, `build-ctranslate2.sh`, `build-onnxruntime.sh`) plus `limit-jobs.sh`, the shared RAM guard that keeps compile parallelism at 1–2 threads. Every dependency is a pinned tag or commit; wheels land in `/opt/super-soaker/cache` for offline rebuilds.
 - Jetson details: SM 8.7 (Orin), L4T r36.x / CUDA 12.6, cuDNN 9 from the L4T repo. `/dev/nvhost*` access comes from the `video` group (the `super-soaker` service user is in it).
 
 ## Prerequisites (for reference — bootstrap.sh installs all of this)

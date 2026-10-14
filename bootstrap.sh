@@ -11,7 +11,8 @@
 # Everything is built locally at pinned versions and installed natively (no
 # Docker): one shared toolchain in /opt/super-soaker, models in
 # /var/lib/super-soaker, three systemd services that start on boot, power
-# locked to MAXN_SUPER + jetson_clocks.
+# mode set to MAXN_SUPER (clocks boost under load, scale down at idle —
+# nothing is pinned).
 #
 # Usage:  sudo ./bootstrap.sh [--skip-build] [--no-reboot] [--force-jobs]
 #   --skip-build   reuse wheels/binaries already in /opt/super-soaker/cache
@@ -369,8 +370,8 @@ write_env /etc/super-soaker/tts.env \
     "KOKORO_SPEED=1.0" "KOKORO_GPU_MEM_MB=1024" \
     "KOKORO_MODEL_DIR=/var/lib/super-soaker/tts" "SELF_TEST=on"
 
-# ---- 7. system config: no service pages in swap, powersave off -------------
-log "applying system configuration (swap policy, power)"
+# ---- 7. system config: no service pages in swap, MAXN_SUPER power mode -----
+log "applying system configuration (swap policy, power mode)"
 cat > /etc/sysctl.d/90-super-soaker.conf <<'EOF'
 # super-soaker: keep voice-stack latency deterministic.
 # Services are also pinned with MemorySwapMax=0; this discourages the kernel
@@ -379,18 +380,39 @@ vm.swappiness=10
 EOF
 sysctl --system >/dev/null
 
-cp "${REPO_DIR}/systemd/super-soaker-clocks.service" /etc/systemd/system/
+# Power mode: MAXN_SUPER raises the frequency ceilings (CPU/GPU/EMC boost to
+# their max under load). Nothing is pinned: idle DVFS scales clocks down.
+# (jetson_clocks pinning was deliberately removed 2026-10-14 — it cost ~1.15 W
+# constant idle power on an always-on box. nvpmodel MAXN_SUPER does NOT lock
+# clocks; it only raises the ceilings.) The mode persists in
+# /var/lib/nvpmodel and NVIDIA's stock nvpmodel.service re-applies it on
+# every boot — no super-soaker unit involved.
+MODE_ID="$(awk -F'[= >]' '/POWER_MODEL/ && /NAME=MAXN_SUPER/ {for(i=1;i<=NF;i++) if($i=="ID") print $(i+1)}' /etc/nvpmodel.conf | head -1)"
+if [ -z "${MODE_ID}" ]; then
+    # fall back to whatever mode is the highest-power one currently set
+    MODE_ID="$(nvpmodel -q | awk '/NV Power Mode/{getline; print; exit}')"
+    log "MAXN_SUPER not found in nvpmodel.conf; keeping mode ${MODE_ID}"
+else
+    log "nvpmodel -m ${MODE_ID} (MAXN_SUPER)"
+    nvpmodel -m "${MODE_ID}"
+fi
+
 cp "${REPO_DIR}/systemd/super-soaker-stt.service" /etc/systemd/system/
 cp "${REPO_DIR}/systemd/super-soaker-llm.service" /etc/systemd/system/
 cp "${REPO_DIR}/systemd/super-soaker-tts.service" /etc/systemd/system/
+# the old clock-lock unit/script are gone: purge them from installed nodes
+if [ -f /etc/systemd/system/super-soaker-clocks.service ]; then
+    log "removing stale unit super-soaker-clocks.service (clock pinning removed)"
+    systemctl disable --now super-soaker-clocks.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/super-soaker-clocks.service
+fi
+rm -f "${INSTALL_ROOT}/deps/lock-clocks.sh"
 systemctl daemon-reload
-systemctl enable super-soaker-clocks.service \
-                  super-soaker-llm.service \
+systemctl enable super-soaker-llm.service \
                   super-soaker-stt.service \
                   super-soaker-tts.service
 
 log "starting services"
-systemctl restart super-soaker-clocks.service
 systemctl restart super-soaker-llm.service
 systemctl restart super-soaker-stt.service
 systemctl restart super-soaker-tts.service

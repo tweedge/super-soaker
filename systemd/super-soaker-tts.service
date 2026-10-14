@@ -1,6 +1,6 @@
 [Unit]
 Description=super-soaker 3/3 TTS: wyoming-kokoro-82M (Wyoming tcp/10210)
-After=network-online.target super-soaker-clocks.service
+After=network-online.target
 Wants=network-online.target
 [Service]
 Type=simple
