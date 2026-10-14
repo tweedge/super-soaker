@@ -254,10 +254,13 @@ case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
           "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"
     ;;
   *)
-    log "  LLM: LFM2.5-1.2B-Instruct (fast chat profile)"
-    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
-          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf" \
-          "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1"
+    log "  LLM: LFM2.5-1.2B-Instruct Q8_0 (fast chat profile)"
+    # Q8_0 chosen over QAD-Q4_0 for fidelity insurance (notes/07: battery
+    # accuracy is identical at QAD-Q4_0/Q8_0/F16 — the cap is the model —
+    # but Q8_0 removes quant noise from the equation at a modest speed cost).
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-Q8_0.gguf" \
+          "f6b981dcb86917fa463f78a362320bd5e2dc45445df147287eedb85e5a30d26a"
     fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-DSpark-GGUF/resolve/main/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
           "${MODEL_DIR}/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
           "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"

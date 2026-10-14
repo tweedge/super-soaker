@@ -43,7 +43,12 @@ LLM_MODEL="${LLM_MODEL:-lfm2.5-1.2b-chat}"
 M=/var/lib/super-soaker/models
 case "$LLM_MODEL" in
   lfm2.5-1.2b-chat)
-    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf}"
+    # Q8_0 target (fidelity insurance — notes/07 proved battery accuracy is
+    # identical at QAD-Q4_0/Q8_0/F16; cap is the model). Spec config is the
+    # measured plateau top: plain draft-dspark n_max 9 (native drafter,
+    # acc 2.99/step — long blocks pay at this acceptance; ngram/p-min/
+    # p-split/backend-sampling all measured neutral-or-worse here).
+    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-1.2B-Instruct-Q8_0.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf}"
     CTX="${CTX:-8192}"
     REASONING_BUDGET="${REASONING_BUDGET:-0}"

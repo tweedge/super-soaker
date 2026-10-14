@@ -103,7 +103,7 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 
 | profile | model | novel tok/s | templated tok/s | battery mean tok/s | warm TTFT | avg reply | tool acc | quality acc |
 |---|---|---|---|---|---|---|---|---|
-| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | ~70 (decode probe) | — | **90.0** | **0.18 s** | **0.51 s** | **85%** | 70% |
+| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct Q8_0 | ~83 | — | **84.4** | **0.19 s** | **0.49 s** | **85%** | 70% |
 | **lfm2.5-1.2b-reasoning** | LFM2.5-1.2B-Thinking Q8_0 | 72.3 | **347** | 69.8 | 0.20 s | **0.82 s** | 55%* | 80%* |
 | **lfm2.5-2.6b-reasoning** | LFM2.5-2.6B QAD-Q4_0 | **59.9** | **237.6** | 63.2 | 0.32 s | **1.38 s** | 90% | 80% |
 | **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 38.1 | 119 | 41.6 | 0.51 s | 3.60 s | **95–100%** | **90%** |
@@ -119,6 +119,10 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 | | templated tok/s | 59.4 | **237.6** | **4.0x** |
 | | avg reply | 2.46 s | **1.38 s** | **1.78x** |
 | | accuracy | 90% / 80% | 90% / 80% | unchanged |
+| **lfm2.5-1.2b-chat** | battery mean tok/s | 46.5 | **84.4** | **1.81x** |
+| | novel tok/s | 44.7 | 83.1 | 1.86x |
+| | avg reply | 0.52 s | 0.49 s | 1.06x |
+| | accuracy | 85% / 70% | 85% / 70% | unchanged |
 | **lfm2.5-1.2b-reasoning** | battery mean tok/s | 61.0 | 69.8 | 1.14x |
 | | templated tok/s | 86.7 | **347.5** | **4.0x** |
 | | avg reply | 2.06 s | **0.82 s** | **2.5x** |
@@ -129,6 +133,8 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 | | templated tok/s | 34.6 | **119** | **3.4x** |
 | | avg reply | 4.28 s | **3.60 s** | 1.19x |
 | | accuracy | 90% / 80% | 95% / 90% | equal or better |
+
+The chat profile's target moved from QAD-Q4_0 to **Q8_0** during its campaign (fidelity insurance, user preference): battery accuracy is *identical* at QAD-Q4_0/Q8_0/F16 (85%/70% at all three — the cap is the model, not the quant), and the table above compares un-optimized vs optimized **on the shipped Q8_0 target** so both columns are like-for-like. QAD-Q4_0 remains measurably faster on novel speech (99.9 vs 83.1 tok/s) if that trade is wanted later.
 
 The spread between "novel" and "templated" is the honest story of both campaigns: real assistant traffic (fixed tools, familiar phrasing) sits between the columns, closer to templated the more the home vocabulary repeats. Both optimizations keep the battery's accuracy at or above the original — no quality was traded.
 
@@ -174,6 +180,7 @@ Both reasoning profiles ship an optimized speculative-decoding stack plus a llam
 | `--spec-draft-p-min` | off (default 0) | 0.4 | confidence truncation HURTS dense (loses accepted tokens for nothing) but helps MoE (prunes low-confidence tails that cost full expert traffic) |
 | drafter quant | Q8_0 | Q8_0 | acceptance is drafter-invariant (F16/Q4_K/Q8_0 all within noise) — the target distribution is the limiter; Q8_0 wins on cost |
 | target quant | QAD-Q4_0 | UD-IQ2_M | higher-fidelity targets do NOT buy acceptance (measured Q4_K_M→Q8_0: flat) and cost raw speed |
+| **lfm2.5-1.2b-chat verdict** | n_max 9, plain dspark, **Q8_0 target** | — | acceptance 2.99/step with the native drafter ⇒ trained block length wins; ngram/p-min/p-split/backend-sampling all neutral-or-worse; Q8_0 shipped for fidelity (battery accuracy identical at QAD-Q4_0/Q8_0/F16 — the cap is the model — see notes/07) |
 
 The `lfm2.5-1.2b-reasoning` profile (LFM2.5-1.2B-Thinking) needs one extra piece of plumbing: its GGUF embeds the **non-thinking** chat-template variant, so llama.cpp's reasoning extraction never engages and thinking leaks into `message.content` (upstream llama.cpp issue #28675, open). Serving it with the reasoning-capable family reference template (`templates/LFM2.5-reasoning.jinja`, vendored from upstream `LFM2.5-8B-A1B.jinja`) via `--chat-template-file` + `--reasoning-format deepseek` fixes extraction, budget capping, and content cleanliness in one step. No dedicated DSpark drafter exists for Thinking; the 1.2B-Instruct drafter works against it at lower acceptance (1.5–2.1/step vs 2.9), so short blocks (`n_max 5`) win there exactly as the low-acceptance rule predicts.
 
