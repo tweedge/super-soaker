@@ -120,7 +120,7 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 | | avg reply | 2.46 s | **1.38 s** | **1.78x** |
 | | accuracy | 90% / 80% | 90% / 80% | unchanged |
 | **lfm2.5-1.2b-chat** | battery mean tok/s | 46.5 | **84.4** | **1.81x** |
-| | novel tok/s | 44.7 | 83.1 | 1.86x |
+| | novel tok/s | untested | 83.1 | unchanged |
 | | avg reply | 0.52 s | 0.49 s | 1.06x |
 | | accuracy | 85% / 70% | 85% / 70% | unchanged |
 | **lfm2.5-1.2b-reasoning** | battery mean tok/s | 61.0 | 69.8 | 1.14x |
