@@ -18,7 +18,7 @@ All prose in markdown files (README.md, AGENTS.md, notes/*.md) uses **soft wrapp
 
 - **Self-tests are stdlib-only Python**, run at every service start (`SELF_TEST=on` in the env files) and must pass for the service to stay up. They exercise the real end-to-end path (CUDA warmup, a real inference round trip, tool-calling as the HA integration does it, prompt-cache behavior). If you change serving parameters, run all three by hand (commands in the README) before declaring victory.
 - **The model battery** is `bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios (including no-tool negatives that punish over-triggering) + 10 factual/brevity scenarios. Identical prompts and `max_tokens` for every profile — the numbers are only comparable because the battery is frozen. Archive results as `bench/results/ha_<LETTER>-<label>.json` and never edit old result files.
-- **When comparing models, control the confounders**: same CTX, same reasoning budget, same draft/speculative settings, same battery, same box, same power/clock state. The 8B-A1B profile intentionally matches the 2.6B's `CTX=32768` / `REASONING_BUDGET=128` so the comparison is about the model, not the knobs.
+- **When comparing models, control the confounders**: same CTX, same reasoning budget, same draft/speculative settings, same battery, same box, same power/clock state. The 8B-A1B profile intentionally matches the 2.6B's `CTX=32768` / `REASONING_BUDGET=256` so the comparison is about the model, not the knobs.
 - **Shell edits get `bash -n`** before deploy. There is no linter; `shellcheck`-clean is nice but not enforced.
 
 ## Measurement methodology (how the numbers in the README were obtained)
@@ -53,7 +53,7 @@ Prefer **Unsloth or LiquidAI official** GGUFs. Third-party requantized uploads v
 - **Single slot (`-np 1`) is required** for LFM2: short-conv state corrupts under co-batching (llama.cpp #29002). Fine anyway — this stack has one caller.
 - **Prompt cache (`--cache-reuse 256`) is the warm-path magic**: the static HA Assist prefix is reused across turns; cold prefill of the full prompt is ~15 s vs ~0.3 s warm TTFT. Don't let context changes churn the prefix.
 - **KV cache at q8_0** halves RAM vs f16 with no observed quality hit at 32k ctx. f16 KV is a rejected trade here.
-- **Bounded reasoning (`--reasoning-budget 128`)** keeps reply latency predictable. The 8B-A1B is reasoning-*only* — it always thinks first — so the budget is what makes it voice-usable at all.
+- **Bounded reasoning (`--reasoning-budget 256`)** keeps reply latency predictable. The 8B-A1B is reasoning-*only* — it always thinks first — so the budget is what makes it voice-usable at all. The budget was raised 128 → 256 (2026-10-14) so drafts finish internally instead of being force-cut mid-thought; the required `REASONING_BUDGET_MESSAGE` wrap-up (`[budget reached — answer briefly in spoken form]`, injected before the end-of-thinking tag via `--reasoning-budget-message`) is what lands a budget cut on a clean hand-off instead of a ragged draft dump. bootstrap.sh writes it into `llm.env` and heals env files that lack it — do not make it optional.
 - **Words/s vs tok/s**: the battery reports words/s; llama-server logs tok/s. For English text, roughly 1 w/s ≈ 1.3–1.5 t/s. Compare like with like.
 
 ## The 8B-A1B decode-optimization campaign (2026-10, full log in notes/04)

@@ -27,7 +27,12 @@
 #   --reasoning-budget {N|off|on|auto}    thinking token budget; N caps
 #                                         thinking at N tokens (0 = off).
 #                                         Defaults per model: 0 for fast,
-#                                         128 for balanced and thorough.
+#                                         256 for balanced and thorough.
+#                                         REASONING_BUDGET_MESSAGE is required
+#                                         and always written to llm.env: it is
+#                                         injected before the end-of-thinking
+#                                         tag when the budget force-closes a
+#                                         draft (no ragged mid-thought dumps).
 #
 # Build parallelism is RAM-critical: the compilers (especially nvcc for ONNX
 # Runtime) peak at several GB per thread on an 8 GB Orin Nano Super. JOBS=1 is
@@ -53,6 +58,9 @@ DO_REBOOT=1
 FORCE_JOBS=0
 LLM_MODEL=""
 REASONING_BUDGET_ARG=""
+# required wrap-up, injected before the end-of-thinking tag when the reasoning
+# budget force-closes thinking (llama-server --reasoning-budget-message)
+REASONING_BUDGET_MESSAGE="[budget reached — answer briefly in spoken form]"
 
 log() { echo -e "\n[bootstrap] $*"; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
@@ -328,7 +336,7 @@ write_env() {
 # sensible thinking-budget defaults per model
 case "$EFF_MODEL" in
     fast) DEFAULT_BUDGET=0 ;;      # no reasoning in this profile
-    *)    DEFAULT_BUDGET=128 ;;    # balanced / thorough
+    *)    DEFAULT_BUDGET=256 ;;    # balanced / thorough
 esac
 if [ -f "$LLM_ENV" ]; then
     cur_model=$(grep -E "^LLM_MODEL=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)
@@ -344,6 +352,10 @@ if [ -f "$LLM_ENV" ]; then
     case "${cur_model:-}" in
         lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) need_rewrite=1 ;;
     esac
+    # REASONING_BUDGET_MESSAGE is required: heal env files that predate it
+    if ! grep -q "^REASONING_BUDGET_MESSAGE=" "$LLM_ENV"; then
+        need_rewrite=1
+    fi
     if [ "$need_rewrite" = "1" ]; then
         echo "  updating LLM config (model=$EFF_MODEL): rewriting $LLM_ENV"
         rm -f "$LLM_ENV"
@@ -356,9 +368,12 @@ write_env "$LLM_ENV" \
     "SELF_TEST=on" \
     "LLM_MODEL=$EFF_MODEL" \
     "REASONING_BUDGET=${REASONING_BUDGET_ARG:-$DEFAULT_BUDGET}" \
+    "REASONING_BUDGET_MESSAGE=\"$REASONING_BUDGET_MESSAGE\"" \
     "# per-model defaults (CTX, model paths) are applied from LLM_MODEL in" \
     "# serve.sh; REASONING_BUDGET above: N caps thinking at N tokens," \
     "# 0/off disables thinking, on = always think, auto = detect from template." \
+    "# REASONING_BUDGET_MESSAGE is required: injected before the end-of-" \
+    "# thinking tag when the budget force-closes a draft." \
     "#CTX=32768"
 write_env /etc/super-soaker/stt.env \
     "# super-soaker STT tuning" \

@@ -158,9 +158,9 @@ sudo ./bootstrap.sh --model fast
 # or: sudo ./bootstrap.sh --model thorough
 ```
 
-On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct Q8_0 + DSpark-Q8_0 (`fast`), LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0 (`balanced`), or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0 (`thorough`). The thinking budget is set the same way: `sudo ./bootstrap.sh --reasoning-budget 256` (or `off`/`on`/`auto`) — defaults are per model (0 for `fast`, 128 for `balanced`/`thorough`), and an explicit flag always wins while unpassed values are preserved across re-runs. You can also edit `LLM_MODEL=`/`REASONING_BUDGET=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `MODEL_PATH`, ...) still win over the profile defaults.
+On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct Q8_0 + DSpark-Q8_0 (`fast`), LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0 (`balanced`), or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0 (`thorough`). The thinking budget is set the same way: `sudo ./bootstrap.sh --reasoning-budget 256` (or `off`/`on`/`auto`) — defaults are per model (0 for `fast`, 256 for `balanced`/`thorough`), and an explicit flag always wins while unpassed values are preserved across re-runs. When the budget force-closes thinking, a required wrap-up (`REASONING_BUDGET_MESSAGE`, default `[budget reached — answer briefly in spoken form]`) is injected before the end-of-thinking tag so the cut lands on a clean hand-off instead of a ragged mid-thought dump; bootstrap always writes it into `llm.env` and heals env files that lack it. You can also edit `LLM_MODEL=`/`REASONING_BUDGET=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `MODEL_PATH`, ...) still win over the profile defaults.
 
-All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=128` for `balanced` and `thorough` (`fast` runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable.
+All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=256` for `balanced` and `thorough` (`fast` runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable, and the `REASONING_BUDGET_MESSAGE` wrap-up closes the draft cleanly when the budget is hit.
 
 ### Performance optimization campaigns (measured)
 
@@ -200,7 +200,7 @@ The guiding rule: **maximum performance inside a hard 8 GB RAM envelope, while t
 | target quant | QAD-Q4_0 (dense), UD-IQ2_M (8B-A1B) | Q4_K_M, Q5_K_M for the 8B | QAD (quantization-aware distill) is LiquidAI's own quality-preserving recipe; for the 8B-A1B MoE only IQ2-class quants fit — Unsloth's UD-IQ2_M was the measured winner of a four-quant shootout |
 | draft model | DSpark-Q8_0 (on) | no draft, F16/Q4 draft | spec decoding is the one lever past the batch-1 streaming cap (measured up to 4.0x on templated traffic, quality-neutral); acceptance is drafter-quants-invariant so Q8_0 wins on cost; F16 drafter is a measured net loss on iGPU |
 | KV cache | q8_0 @ 32k ctx | f16 | halves KV RAM with no observed quality hit; keeps the long HA prompt + history in context instead of truncating it (intelligence win) |
-| reasoning budget | 128 tokens | 0 / unlimited | bounded scratch thinking: answers keep some reasoning quality, latency stays predictable; unlimited thinking would blow the reply budget |
+| reasoning budget | 256 tokens | 0 / unlimited | bounded scratch thinking: answers keep some reasoning quality, latency stays predictable; unlimited thinking would blow the reply budget. A required `REASONING_BUDGET_MESSAGE` wrap-up is injected at force-close so a budget cut never dumps a ragged draft |
 | runtime | llama.cpp, single slot | vLLM, batching | vLLM's pool + scheduler overhead measured 2.8–3.3 GB earlier; single-caller makes batching pure loss. `FA_ALL_QUANTS` + CUDA graphs recover the speed instead |
 
 Net effect: a slightly slower per-token rate than a bigger model would need to be *fast at all costs* — accepted only where it buys answer quality. The speculative-decoding stack is the opposite trade: free speed that does not touch quality, so it is on by default.
@@ -284,7 +284,8 @@ With the old `jetson_clocks` pinning (EMC held at max, CPU idle states disabled)
 | `-ctk/-ctv q8_0` | KV cache quant | ~half the KV RAM of f16, no quality hit observed |
 | `-b 1024 -ub 256` | batches | bounds CUDA workspace peak |
 | `--cache-reuse 256` | prompt cache | turns the HA Assist prompt into a prefix hit |
-| `--reasoning-budget 128` | thinking budget | enough scratch, low latency |
+| `--reasoning-budget 256` | thinking budget | enough scratch to finish drafts, low latency |
+| `--reasoning-budget-message` | force-close wrap-up | `[budget reached — answer briefly in spoken form]` before the end-of-thinking tag — no ragged mid-thought dumps |
 | `GGML_CUDA_NO_VMM=ON` | | avoids 32 GB VMM reservation crash on Jetson (#29142) |
 | `GGML_CUDA_GRAPHS=ON` | | decode-speed essential on Orin |
 

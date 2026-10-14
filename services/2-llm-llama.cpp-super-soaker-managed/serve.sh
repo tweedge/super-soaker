@@ -24,16 +24,20 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/super-soaker/llama.cpp/bin/llama-server}"
 SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py}"
+# required wrap-up, injected before the end-of-thinking tag when the reasoning
+# budget force-closes thinking (llama-server --reasoning-budget-message); a
+# bare mid-thought cut otherwise dumps the ragged draft tail into the reply
+REASONING_BUDGET_MESSAGE="${REASONING_BUDGET_MESSAGE:-[budget reached — answer briefly in spoken form]}"
 
 # ---- model selection --------------------------------------------------------
 # LLM_MODEL picks the serving variant (see README "Model choice"):
 #   fast      LFM2.5-1.2B-Instruct Q8_0 + its DSpark draft, no reasoning
 #             (lowest latency — benchmark-measured ~2x lower end-to-end)
-#   balanced  LFM2.5-2.6B QAD-Q4_0 + DSpark draft, reasoning budget 128
+#   balanced  LFM2.5-2.6B QAD-Q4_0 + DSpark draft, reasoning budget 256
 #             (default; the agentic profile: reliable facts, never over-
 #             triggers, ~2s slower than the 1.2B)
 #   thorough  LFM2.5-8B-A1B (MoE 8.3B/1.5B active), Unsloth UD-IQ2_M +
-#             DSpark-Q8_0 draft, reasoning budget 128 (best tool/quality
+#             DSpark-Q8_0 draft, reasoning budget 256 (best tool/quality
 #             accuracy on this box; fits only at IQ2-class quants — README)
 # Explicit env overrides (MODEL_PATH, DRAFT_PATH, CTX, REASONING_BUDGET) win.
 LLM_MODEL="${LLM_MODEL:-balanced}"
@@ -60,7 +64,7 @@ case "$LLM_MODEL" in
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-2.6B-QAD-Q4_0.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
-    REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    REASONING_BUDGET="${REASONING_BUDGET:-256}"
     # optimized spec stack (measured 2026-10-13, notes/05): dense verify is
     # cheap so n_max=7 (not 9) wins and p-min truncation HURTS (unlike MoE);
     # ngram-mod adds free accepted tokens on templated HA traffic.
@@ -72,7 +76,7 @@ case "$LLM_MODEL" in
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-8B-A1B-UD-IQ2_M.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-8B-A1B-DSpark-Q8_0.gguf}"
     CTX="${CTX:-32768}"
-    REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    REASONING_BUDGET="${REASONING_BUDGET:-256}"
     # optimized spec stack (measured 2026-10-13, notes/04):
     # n_max=5 (short blocks win at MoE verify-traffic saturation),
     # p-min 0.4 (DSpark confidence truncation), ngram-mod (free accepted
@@ -147,7 +151,12 @@ if [ -n "$REASONING_BUDGET" ]; then
         off) CMD+=(-rea off) ;;
         auto) CMD+=(-rea auto) ;;
         on) CMD+=(-rea on) ;;
-        *) CMD+=(--reasoning-budget "$REASONING_BUDGET") ;;
+        *)
+            CMD+=(--reasoning-budget "$REASONING_BUDGET")
+            if [ "$REASONING_BUDGET" -gt 0 ] 2>/dev/null; then
+                CMD+=(--reasoning-budget-message "$REASONING_BUDGET_MESSAGE")
+            fi
+            ;;
     esac
 fi
 
