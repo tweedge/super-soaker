@@ -103,11 +103,12 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 
 | profile | model | novel tok/s | templated tok/s | battery mean tok/s | warm TTFT | avg reply | tool acc | quality acc |
 |---|---|---|---|---|---|---|---|---|
-| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | ~70 (decode probe) | — | **90.0** | **0.18 s** | **0.51 s** | 85% | 70% |
+| **lfm2.5-1.2b-chat** (default) | LFM2.5-1.2B-Instruct QAD-Q4_0 | ~70 (decode probe) | — | **90.0** | **0.18 s** | **0.51 s** | **85%** | 70% |
+| **lfm2.5-1.2b-reasoning** | LFM2.5-1.2B-Thinking Q8_0 | 72.3 | **347** | 69.8 | 0.20 s | **0.82 s** | 55%* | 80%* |
 | **lfm2.5-2.6b-reasoning** | LFM2.5-2.6B QAD-Q4_0 | **59.9** | **237.6** | 63.2 | 0.32 s | **1.38 s** | 90% | 80% |
 | **lfm2.5-8b-a1b-reasoning** | LFM2.5-8B-A1B UD-IQ2_M | 38.1 | 119 | 41.6 | 0.51 s | 3.60 s | **95–100%** | **90%** |
 
-"Novel" = 12 unique prompts (free-form speech proxy); "templated" = identical-utterance probe (HA boilerplate ceiling — fixed tool JSON, repeated phrasing); "battery mean" = per-scenario decode tok/s across all 30 frozen scenarios. Battery accuracy is n=1 per scenario at temp 0.1, so it wobbles ±5–10% between runs (the 8B's archived `ha_D`/`ha_H` runs scored 100%/90%); tok/s and latency are stable. The 1.2B and 2.6B share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice.
+"Novel" = 12 unique prompts (free-form speech proxy); "templated" = identical-utterance probe (HA boilerplate ceiling — fixed tool JSON, repeated phrasing); "battery mean" = per-scenario decode tok/s across all 30 frozen scenarios. Battery accuracy is n=1 per scenario at temp 0.1, so it wobbles ±5–10% between runs (the 8B's archived `ha_D`/`ha_H` runs scored 100%/90%); tok/s and latency are stable. (*The 1.2B-Thinking's tool/quality scores swing wider across runs — 45–65% / 70–90% — with identical core failures every run (`climate_set`, `timer_cancel`, `weather`, `count_r`): those are the model's own weak spots, matching its card's BFCLv3 57 and 'not recommended for knowledge-intensive tasks'; the optimization adds no systematic penalty.) The 1.2B and 2.6B share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice.
 
 ### super-soaker optimized vs original config (same battery, same box)
 
@@ -118,6 +119,11 @@ Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_ba
 | | templated tok/s | 59.4 | **237.6** | **4.0x** |
 | | avg reply | 2.46 s | **1.38 s** | **1.78x** |
 | | accuracy | 90% / 80% | 90% / 80% | unchanged |
+| **lfm2.5-1.2b-reasoning** | battery mean tok/s | 61.0 | 69.8 | 1.14x |
+| | templated tok/s | 86.7 | **347.5** | **4.0x** |
+| | avg reply | 2.06 s | **0.82 s** | **2.5x** |
+| | novel tok/s | ~70 | 72.3 | 1.03x |
+| | accuracy | 55–65% / 70–90% | 45–55% / 70% | run-noise overlap (see note) |
 | **lfm2.5-8b-a1b-reasoning** | battery mean tok/s | 39.0 | 41.6 | 1.07x |
 | | novel tok/s | 34.6 | 38.1 | 1.10x |
 | | templated tok/s | 34.6 | **119** | **3.4x** |
@@ -139,6 +145,7 @@ The spread between "novel" and "templated" is the honest story of both campaigns
 | profile | resident LLM | peak (LLM+TTS concurrent) | fits with STT+TTS? |
 |---|---|---|---|
 | lfm2.5-1.2b-chat | ~2.6 GB | ~2.6 GB | yes, ~1.8 GB headroom |
+| lfm2.5-1.2b-reasoning (Thinking Q8_0) | ~2.2 GB | ~2.7 GB | yes, ~2.3 GB headroom |
 | lfm2.5-2.6b-reasoning | ~3.0 GB | ~3.2 GB | yes, ~1.4 GB headroom |
 | lfm2.5-8b-a1b-reasoning (UD-IQ2_M) | ~4.3 GB | ~4.8 GB (7.04/7.62 GB board) | yes, but only ~580 MB headroom |
 
@@ -168,16 +175,19 @@ Both reasoning profiles ship an optimized speculative-decoding stack plus a llam
 | drafter quant | Q8_0 | Q8_0 | acceptance is drafter-invariant (F16/Q4_K/Q8_0 all within noise) — the target distribution is the limiter; Q8_0 wins on cost |
 | target quant | QAD-Q4_0 | UD-IQ2_M | higher-fidelity targets do NOT buy acceptance (measured Q4_K_M→Q8_0: flat) and cost raw speed |
 
+The `lfm2.5-1.2b-reasoning` profile (LFM2.5-1.2B-Thinking) needs one extra piece of plumbing: its GGUF embeds the **non-thinking** chat-template variant, so llama.cpp's reasoning extraction never engages and thinking leaks into `message.content` (upstream llama.cpp issue #28675, open). Serving it with the reasoning-capable family reference template (`templates/LFM2.5-reasoning.jinja`, vendored from upstream `LFM2.5-8B-A1B.jinja`) via `--chat-template-file` + `--reasoning-format deepseek` fixes extraction, budget capping, and content cleanliness in one step. No dedicated DSpark drafter exists for Thinking; the 1.2B-Instruct drafter works against it at lower acceptance (1.5–2.1/step vs 2.9), so short blocks (`n_max 5`) win there exactly as the low-acceptance rule predicts.
+
 Measured campaign results (tok/s, frozen battery + bench harness):
 
-| metric | 2.6B original → optimized | 8B original → optimized |
+| metric | 2.6B original → optimized | 8B original → optimized | 1.2B-Thinking original → optimized |
 |---|---|---|
 | raw batch-1 decode | 30.5 → 30.5 (1.0x) | 35.5 → 35.5 (1.0x) |
 | novel speech | 55.3 → 59.9 (1.08x) | 34.6 → 38.1 (1.10x) |
 | templated voice traffic | 59.4 → **237.6 (4.0x)** | 34.6 → **119 (3.4x)** |
 | battery mean tok/s | 57.7 → 63.2 (1.10x) | 39.0 → 41.6 (1.07x) |
 | battery avg reply | 2.46 s → **1.38 s (1.78x)** | 4.28 s → 3.60 s (1.19x) |
-| battery accuracy | 90/80 → 90/80 | 90/80 → 95/90 |
+| battery accuracy | 90/80 → 90/80 | 90/80 → 95/90 | see note (run-noise overlap) |
+| templated tok/s (extra) | 59.4 → 237.6 (4.0x) | 34.6 → 119 (3.4x) | 86.7 → 347.5 (4.0x) |
 
 Why the spread: batch-1 GEMVs on this GPU stream at a fixed ~24% (IQ-LUT quants) or ~37% (block quants) of LPDDR5 bandwidth, so non-spec decode is capped by bytes-per-token (30–48 tok/s on these models). Speculative decoding escapes that cap by turning hundreds of skinny GEMVs into fat verify GEMMs — but only accepted tokens count. Dense verify reads weights once per block (break-even ≈ 1.2 accepted/step — every acceptance point is profit), while 4-of-32 MoE verify traffic saturates with block length (needs 5+). Acceptance itself is capped at ~2.3–3.5/step on novel speech for both models: the DSpark drafter was distilled against an F16 target and drifts on quantized targets (llama.cpp issue #25618) — measured invariant across drafter quants and target quants. Templated HA traffic accepts 5+ and hits the ceilings above. Full logs, rejected experiments (F16 drafter, p-min, TQ2_0, custom quants, micro knobs, target-fidelity sweeps) and the constraint analyses: `notes/04-decode-optimization-research.md` (8B) and `notes/05-2.6b-optimization.md` (2.6B).
 

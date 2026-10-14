@@ -18,7 +18,7 @@
 #   --no-reboot    do not reboot at the end (services start anyway)
 #   --force-jobs   allow JOBS>2 (dangerous on 8 GB devices — see below)
 #
-#   --model {lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning}
+#   --model {lfm2.5-1.2b-chat|lfm2.5-1.2b-reasoning|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning}
 #                                         default lfm2.5-1.2b-chat
 #
 # Build parallelism is RAM-critical: the compilers (especially nvcc for ONNX
@@ -54,7 +54,7 @@ while [ $# -gt 0 ]; do
         --no-reboot)   DO_REBOOT=0 ;;
         --force-jobs)  FORCE_JOBS=1 ;;
         --model)       if [ $# -lt 2 ]; then
-                           echo "--model requires a value: lfm2.5-1.2b-chat, lfm2.5-2.6b-reasoning, or lfm2.5-8b-a1b-reasoning" >&2
+                           echo "--model requires a value: lfm2.5-1.2b-chat, lfm2.5-1.2b-reasoning, lfm2.5-2.6b-reasoning, or lfm2.5-8b-a1b-reasoning" >&2
                            exit 2
                        fi
                        LLM_MODEL="$2"; shift ;;
@@ -64,8 +64,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$LLM_MODEL" in
-    ""|lfm2.5-1.2b-chat|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) ;;
-    *) die "unknown --model '$LLM_MODEL' (lfm2.5-1.2b-chat | lfm2.5-2.6b-reasoning | lfm2.5-8b-a1b-reasoning)" ;;
+    ""|lfm2.5-1.2b-chat|lfm2.5-1.2b-reasoning|lfm2.5-2.6b-reasoning|lfm2.5-8b-a1b-reasoning) ;;
+    *) die "unknown --model '$LLM_MODEL' (lfm2.5-1.2b-chat | lfm2.5-1.2b-reasoning | lfm2.5-2.6b-reasoning | lfm2.5-8b-a1b-reasoning)" ;;
 esac
 
 # 1 compile thread by default; >2 needs --force-jobs (deps/limit-jobs.sh).
@@ -219,6 +219,18 @@ case "${LLM_MODEL:-lfm2.5-1.2b-chat}" in
     fetch "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-DSpark-GGUF/resolve/main/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
           "${MODEL_DIR}/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
           "78c6edb3ec97d54fa2e6ec1ba44c394db0a1ae62fcd854d2193389c1295e0a6d"
+    ;;
+  lfm2.5-1.2b-reasoning)
+    log "  LLM: LFM2.5-1.2B-Thinking Q8_0 (small reasoning profile)"
+    # LiquidAI's reasoning-focused 1.2B. No dedicated DSpark drafter exists
+    # for Thinking; the LFM2.5-1.2B-Instruct DSpark is the same architecture
+    # family and serves as the drafter (verified on-box — see notes/06).
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Thinking-Q8_0.gguf" \
+          "255f9dcbb8f198c8b6e91b35a63349f062a4902bc58f59312f9b66de45fa9064"
+    fetch "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-DSpark-GGUF/resolve/main/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
+          "${MODEL_DIR}/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf" \
+          "9f2fd36f4ea26e66b2732cefead2586d90220d829d70e63de8030e3878d49ef5"
     ;;
   *)
     log "  LLM: LFM2.5-1.2B-Instruct (fast chat profile)"

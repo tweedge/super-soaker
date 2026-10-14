@@ -24,6 +24,7 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/super-soaker/llama.cpp/bin/llama-server}"
 SELFTEST="${SELFTEST:-/opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py}"
+TPL_DIR="${TPL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/templates}"
 
 # ---- model selection --------------------------------------------------------
 # LLM_MODEL picks the serving variant (see README "Model choice"):
@@ -46,6 +47,26 @@ case "$LLM_MODEL" in
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf}"
     CTX="${CTX:-8192}"
     REASONING_BUDGET="${REASONING_BUDGET:-0}"
+    ;;
+  lfm2.5-1.2b-reasoning)
+    MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-1.2B-Thinking-Q8_0.gguf}"
+    DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf}"
+    CTX="${CTX:-32768}"
+    REASONING_BUDGET="${REASONING_BUDGET:-128}"
+    # The Thinking GGUF embeds the NON-thinking template variant (verified
+    # byte-identical to llama.cpp's LFM2.5-Instruct.jinja), so llama.cpp's
+    # reasoning extraction never engages and thinking leaks into content
+    # (upstream issue #28675). Serve the reasoning-capable family reference
+    # template instead: reasoning_content populates, the budget caps
+    # thinking, content stays clean. Override with TEMPLATE_FILE=...
+    TEMPLATE_FILE="${TEMPLATE_FILE:-$TPL_DIR/LFM2.5-reasoning.jinja}"
+    REASONING_FORMAT="${REASONING_FORMAT:-deepseek}"
+    # optimized spec stack (measured 2026-10-14, notes/06): dense model with
+    # a family-mismatched drafter (low acceptance ~1.5-2.1) => short blocks
+    # win (n_max 5) + ngram-mod; p-min hurts.
+    SPEC_TYPE="${SPEC_TYPE:-draft-dspark,ngram-mod}"
+    SPEC_N_MAX="${SPEC_N_MAX:-5}"
+    SPEC_EXTRA="${SPEC_EXTRA:-}"
     ;;
   lfm2.5-2.6b-reasoning)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-2.6B-QAD-Q4_0.gguf}"
@@ -141,6 +162,16 @@ if [ -n "$REASONING_BUDGET" ]; then
         *) CMD+=(--reasoning-budget "$REASONING_BUDGET") ;;
     esac
 fi
+
+if [ -n "${TEMPLATE_FILE:-}" ]; then
+    if [ -f "$TEMPLATE_FILE" ]; then
+        CMD+=(--chat-template-file "$TEMPLATE_FILE")
+        log "chat template override: $TEMPLATE_FILE"
+    else
+        log "ERROR: TEMPLATE_FILE not found: $TEMPLATE_FILE"; exit 1
+    fi
+fi
+if [ -n "${REASONING_FORMAT:-}" ]; then CMD+=(--reasoning-format "$REASONING_FORMAT"); fi
 
 if [ -n "$PRIO" ]; then CMD+=(--prio "$PRIO"); fi
 if [ -n "$API_KEY" ]; then CMD+=(--api-key "$API_KEY"); fi
