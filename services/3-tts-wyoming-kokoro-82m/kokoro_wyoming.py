@@ -7,7 +7,11 @@ Changes from v1:
 - synthesis runs in an executor: the event loop keeps answering Describe while busy
 - Wyoming streaming (synthesize-start/chunk/stop): audio begins at the first
   sentence boundary while the LLM is still generating
-- warmup synth before the port opens, so the first real request is warm
+- exact-size CUDA arena growth (kSameAsRequested) and a 32 MB cuDNN workspace
+  clamp: kNextPowerOfTwo once doubled the arena (~700 MB in one step) on the
+  first long sentence and the kernel OOM-killed the service mid-request
+- warmup with a full-size (503-phoneme) batch before the port opens, so the
+  arena high-water mark is reached at service start, not on the first long answer
 - per-request voice validated; samples clipped before int16 (no wraparound clicks)
 """
 import asyncio
@@ -15,6 +19,7 @@ import logging
 import os
 import re
 import signal
+import time
 from functools import partial
 
 import numpy as np
@@ -24,6 +29,7 @@ from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.event import Event
 from wyoming.info import Attribution, Describe, Info, TtsProgram, TtsVoice
 from wyoming.server import AsyncEventHandler, AsyncServer
+from longform import WARMUP_TEXT
 from speech_clean import _SENTENCE_END, clean_for_speech
 from wyoming.tts import (
     Synthesize,
@@ -165,12 +171,44 @@ def load_kokoro() -> Kokoro:
         "CUDAExecutionProvider",
         {
             "gpu_mem_limit": str(KOKORO_GPU_MEM_MB * 1024 * 1024),
-            "arena_extend_strategy": "kNextPowerOfTwo",
-            "cudnn_conv_algo_search": "HEURISTIC",
+            "arena_extend_strategy": "kSameAsRequested",
+            "cudnn_conv_algo_search": "DEFAULT",
+            "cudnn_conv_use_max_workspace": "0",
         },
     )]
     sess = rt.InferenceSession(model_path, providers=providers)
     return Kokoro.from_session(sess, os.path.join(model_dir, "voices.npy"))
+
+
+def warm_up(kokoro: Kokoro) -> None:
+    """Synthesize a full-size batch so the CUDA arena is sized before traffic.
+
+    kokoro-onnx caps a batch at 510 phonemes and WARMUP_TEXT yields one
+    503-phoneme batch. The audio is checked for plausible duration and level,
+    so a broken allocation fails here at start instead of on a long answer.
+    """
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            started = time.perf_counter()
+            audio, rate = kokoro.create(
+                WARMUP_TEXT, voice=KOKORO_VOICE, speed=KOKORO_SPEED)
+            duration = len(audio) / rate
+            rms = float(np.sqrt(np.mean(np.square(np.clip(audio, -1.0, 1.0)))))
+            if duration < 5.0 or rms < 0.01:
+                raise RuntimeError(
+                    f"implausible warmup audio ({duration:.2f}s, rms {rms:.4f})")
+            _LOGGER.info(
+                "Warmup: %.2f s audio in %.2f s, rms %.4f (arena sized for a full batch)",
+                duration, time.perf_counter() - started, rms)
+            return
+        except Exception as exc:
+            last_error = exc
+            _LOGGER.warning("Warmup attempt %d/3 failed: %s", attempt, exc)
+            time.sleep(5)
+    _LOGGER.warning(
+        "Long-form warmup failed (%s); continuing — the arena will grow on the "
+        "first long synthesis", last_error)
 
 
 async def main():
@@ -186,8 +224,8 @@ async def main():
     if KOKORO_VOICE not in voices:
         raise SystemExit(f"KOKORO_VOICE {KOKORO_VOICE!r} not in model voices")
 
-    _LOGGER.info("Warming up...")
-    kokoro.create("Ready.", voice=KOKORO_VOICE, speed=KOKORO_SPEED)
+    _LOGGER.info("Warming up (full-size batch)...")
+    warm_up(kokoro)
     _LOGGER.info("Kokoro loaded with %d voices", len(voices))
 
     wyoming_info = Info(tts=[TtsProgram(

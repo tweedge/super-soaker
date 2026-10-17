@@ -14,6 +14,8 @@ import struct
 import sys
 import time
 
+from longform import WARMUP_TEXT
+
 
 def _send_event(sock: socket.socket, event_type: str, data: dict = None, payload: bytes = b"") -> None:
     data_bytes = json.dumps(data).encode() if data is not None else b""
@@ -149,6 +151,28 @@ def main() -> int:
             fail(f"{label}: audio too quiet (rms={rms:.0f}), likely silence")
         if streaming and r["ttfc_ms"] is not None and r["ttfc_ms"] > 3000:
             fail(f"{label}: time to first chunk {r['ttfc_ms']:.0f}ms > 3000ms")
+
+    # gate 3: worst-case long-form batch (one 503-phoneme sentence). This is the
+    # largest synthesis the runtime can produce; it must complete without an
+    # arena allocation failure (the 2026-10-17 OOM killed the service here).
+    try:
+        r = synthesize(args.host, args.port, WARMUP_TEXT, args.voice, True)
+        bytes_per_sec = r["rate"] * r["width"] * r["channels"]
+        dur = len(r["audio"]) / bytes_per_sec
+        rms = rms_int16(r["audio"])
+        ttfc = r["ttfc_ms"] or 0.0
+        print(f"[selftest-tts] longform: {dur:.2f}s audio, rate={r['rate']}, "
+              f"ttfc={ttfc:.0f}ms, total={r['total_ms']:.0f}ms, rms={rms:.0f}")
+        if r["rate"] != 24000:
+            fail(f"longform: unexpected sample rate {r['rate']}")
+        if dur < 5.0:
+            fail(f"longform: implausible duration {dur:.2f}s")
+        if rms < 300:
+            fail(f"longform: audio too quiet (rms={rms:.0f}), likely silence")
+        if ttfc > 10000:
+            fail(f"longform: time to first chunk {ttfc:.0f}ms > 10000ms")
+    except Exception as e:
+        fail(f"longform: {e}")
 
     if failures:
         print(f"[selftest-tts] {len(failures)} failure(s)")

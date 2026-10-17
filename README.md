@@ -243,13 +243,15 @@ All figures are `MemTotal − MemFree − Cached` deltas at 100 ms sampling, whi
 | LLM balanced | ~3.0 GB | flat under load |
 | LLM thorough (UD-IQ2_M + DSpark) | ~4.3 GB | ~4.8 GB |
 | STT (whisper tiny/en int8) | ~0.7 GB | flat |
-| TTS (kokoro fp16, ONNX CUDA) | ~1.1 GB | ~1.5 GB |
+| TTS (kokoro fp16, ONNX CUDA; arena pre-sized at start) | ~1.3 GB | ~1.3 GB (flat — high-water reached at boot) |
 | OS (headless) | ~0.8 GB | — |
 | **total with default balanced profile** | **~5.6 GB / 7.4 GB** | **~6.2 GB / 7.4 GB** |
 | **total with fast profile** | **~5.2 GB / 7.4 GB** | **~5.6 GB / 7.4 GB** |
 | **total with thorough profile** | **~6.9 GB / 7.4 GB** | **~7.0 GB / 7.4 GB** |
 
 ~1.2 GB headroom at peak on the default balanced profile (~1.8 GB on fast), ~0.5 GB on thorough (measured 7.04/7.62 GB peak with zero swap — see the quant hunt notes); every service unit pins `MemorySwapMax=0` and `vm.swappiness=10`, so the answer to "is anything swapped?" is *no* by construction. Verify with `grep VmSwap /proc/$(pgrep -f serve.sh)/status` or `free -h`.
+
+2026-10-17 (TTS arena change): the TTS now sizes its CUDA arena at service start with a full-size 503-phoneme batch, so the arena high-water (~0.87 GB) is resident from boot instead of growing on the first long answer (the growth was what pushed the box into a global OOM mid-request). Measured on the live box, default balanced profile: TTS nvmap flat at ~1.2 GB across 8–99-word requests and full-size batches, zero swap, ~0.2–0.8 GB available depending on page-cache state (88–207 MB free, 0.3–0.9 GB reclaimable cache). Long answers no longer need mid-request headroom, but the steady-state figure is now ~0.2–0.8 GB rather than the ~1.2 GB peak number above, which predates the change.
 
 Earlier docker-based deployments of this stack did **not** fit: the daemon, per-container library duplication, and the LLM's GPU pool together pushed the box into a zram swap spiral (TTS OOM-killed, machine wedged). Running native is the make-or-break difference.
 
@@ -293,10 +295,10 @@ With the old `jetson_clocks` pinning (EMC held at max, CPU idle states disabled)
 
 - Wyoming streaming: audio starts at the first sentence boundary
 - text sanitation before phonemization (`speech_clean.py`): markdown, thinking/reasoning blocks (including half-open ones from truncated streams), tool-call blocks and JSON payloads, stray angle brackets — espeak reads `<` as "less than", `*` as "asterisk". Unit-tested (25 cases in `test_clean.py`) and gated at every service start
-- CUDA arena capped (`KOKORO_GPU_MEM_MB=1024`) — measured comfortable
-- **fp16 model** — validated to fit in RAM; `int8` is *slower* on this GPU (quantized ops fall back to CPU), so don't use it
+- CUDA arena: exact-size growth (`arena_extend_strategy=kSameAsRequested`), 32 MB cuDNN workspace clamp, `cudnn_conv_algo_search=DEFAULT`, capped at `KOKORO_GPU_MEM_MB=1024`. A full 503-phoneme batch needs ~0.87 GB of arena; power-of-two growth doubled it and the kernel OOM-killed the service mid-answer (2026-10-17), which is why the growth strategy and algo search are pinned here
+- boot warmup synthesizes a full-size 503-phoneme batch (`longform.py`) before the port opens: the arena's high-water mark is reached at service start, so no request can grow it, and an allocation failure fails the start instead of a request
+- **fp16 model** — validated to fit in RAM; `int8` is *slower* on this GPU (quantized ops fall back to CPU), so don't use it. `q8f16` was also measured and rejected: it saves ~70 MB of weights but kokoro-onnx 0.5.0 sends `speed` as int32 while that export expects float (`InvalidArgument`), and activations are unchanged
 - fails fast if `CUDAExecutionProvider` is missing (no silent CPU fallback)
-- warmup synthesis before the port opens
 
 ## Self-tests
 
@@ -313,7 +315,7 @@ sudo -u super-soaker /opt/super-soaker/venv-tts/bin/python3 \
 
 - **STT**: speaks "hello world" with espeak-ng, asserts the transcript round-trips.
 - **LLM**: model list, warmup completions, streaming speed (TTFT + tok/s), tool-calling round trip (what `hass_local_openai_llm` needs), prompt-cache probe.
-- **TTS**: plain + streaming synthesis, asserts 24 kHz audio, plausible duration, non-silence RMS, and streaming first-chunk < 3 s.
+- **TTS**: plain + streaming synthesis plus a worst-case 503-phoneme long-form synthesis (the largest batch the runtime can emit), asserts 24 kHz audio, plausible duration, non-silence RMS, and streaming first-chunk < 3 s (10 s for the long-form gate).
 
 ## Operations
 
