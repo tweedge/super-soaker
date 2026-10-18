@@ -5,6 +5,8 @@ Changes from v1:
 - CUDA arena capped (KOKORO_GPU_MEM_MB) so VRAM can't creep into the NVENC budget
 - fails fast at startup if the CUDA provider is missing (no silent CPU fallback)
 - synthesis runs in an executor: the event loop keeps answering Describe while busy
+- synthesis is serialized behind a lock: concurrent requests queue instead of
+  running two create() calls whose activation patterns cannot share the arena cap
 - Wyoming streaming (synthesize-start/chunk/stop): audio begins at the first
   sentence boundary while the LLM is still generating
 - exact-size CUDA arena growth (kSameAsRequested) and a 32 MB cuDNN workspace
@@ -19,6 +21,7 @@ import logging
 import os
 import re
 import signal
+import threading
 import time
 from functools import partial
 
@@ -55,6 +58,18 @@ def _to_int16(samples: np.ndarray) -> bytes:
     return (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
 
+# One synthesis at a time. Two concurrent create() calls each allocate their own
+# activation pattern; the arena cannot hold both under its cap and the second
+# request dies with a BFC allocation error (measured 3-4% failures at
+# concurrency 2). The lock makes concurrent requests queue instead.
+_SYNTH_LOCK = threading.Lock()
+
+
+def _create_locked(kokoro, text: str, voice: str):
+    with _SYNTH_LOCK:
+        return kokoro.create(text, voice=voice, speed=KOKORO_SPEED)
+
+
 class KokoroEventHandler(AsyncEventHandler):
     def __init__(self, wyoming_info: Info, kokoro, voices: set, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -75,7 +90,7 @@ class KokoroEventHandler(AsyncEventHandler):
     async def _synth(self, text: str, voice: str):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, partial(self.kokoro.create, text, voice=voice, speed=KOKORO_SPEED)
+            None, partial(_create_locked, self.kokoro, text, voice)
         )
 
     async def _speak(self, text: str, voice: str, send_start: bool) -> int:
