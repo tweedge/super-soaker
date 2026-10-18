@@ -57,13 +57,20 @@ case "$LLM_MODEL" in
     # p-split/backend-sampling all measured neutral-or-worse here).
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-1.2B-Instruct-Q8_0.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-1.2B-Instruct-DSpark-Q8_0.gguf}"
-    CTX="${CTX:-8192}"
+    # Same 16384 ceiling as the other profiles (2026-10-17): the KV saving is
+    # small at 1.2B but a uniform cap keeps every profile inside the RAM budget.
+    CTX="${CTX:-16384}"
     REASONING_BUDGET="${REASONING_BUDGET:-0}"
     ;;
   balanced)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-2.6B-QAD-Q4_0.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-2.6B-DSpark-Q8_0.gguf}"
-    CTX="${CTX:-32768}"
+    # 16384, not 32768: measured -352 MB of nvmap (3.30 -> 2.94 GB) on the
+    # 8 GB box. HA prompts are ~2.5k tokens and its longest observed tool
+    # loop reached ~3.9k, so 16k keeps >4x headroom. The 32k KV was what
+    # left no room when a TTS synthesis allocated during an HA tool loop
+    # and the kernel OOM-killed llama-server (2026-10-17).
+    CTX="${CTX:-16384}"
     REASONING_BUDGET="${REASONING_BUDGET:-256}"
     # optimized spec stack (measured 2026-10-13, notes/05): dense verify is
     # cheap so n_max=7 (not 9) wins and p-min truncation HURTS (unlike MoE);
@@ -75,7 +82,10 @@ case "$LLM_MODEL" in
   thorough)
     MODEL_PATH="${MODEL_PATH:-$M/LFM2.5-8B-A1B-UD-IQ2_M.gguf}"
     DRAFT_PATH="${DRAFT_PATH:-$M/LFM2.5-8B-A1B-DSpark-Q8_0.gguf}"
-    CTX="${CTX:-32768}"
+    # 16384, not 32768: the 8B-A1B is the tightest profile on this box
+    # (measured 7.04/7.62 GB peak at 32k). The same 16k ceiling used by
+    # balanced gives it KV headroom without touching quant or spec settings.
+    CTX="${CTX:-16384}"
     REASONING_BUDGET="${REASONING_BUDGET:-256}"
     # optimized spec stack (measured 2026-10-13, notes/04):
     # n_max=5 (short blocks win at MoE verify-traffic saturation),

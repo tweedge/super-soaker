@@ -197,7 +197,7 @@ def main():
         [{"role": "system",
           "content": "You are a home assistant. Use the provided tools."},
          {"role": "user", "content": "Turn on the kitchen light."}],
-        "tool_call_forced", stream=False, tools=tools, max_tokens=256,
+        "tool_call_forced", stream=False, tools=tools, max_tokens=384,
         tool_choice={"type": "function",
                      "function": {"name": "turn_on_light"}})
     if run is not None:
@@ -217,7 +217,7 @@ def main():
                      "asks to control a device, immediately call the tool "
                      "with the matching entity_id. Do not ask questions."},
          {"role": "user", "content": "Turn on the kitchen light."}],
-        "tool_call_auto", stream=False, tools=tools, max_tokens=256)
+        "tool_call_auto", stream=False, tools=tools, max_tokens=384)
     if run is not None:
         tc = run.get("tool_calls")
         if not tc:

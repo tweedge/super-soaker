@@ -160,7 +160,7 @@ sudo ./bootstrap.sh --model fast
 
 On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct Q8_0 + DSpark-Q8_0 (`fast`), LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0 (`balanced`), or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0 (`thorough`). The thinking budget is set the same way: `sudo ./bootstrap.sh --reasoning-budget 256` (or `off`/`on`/`auto`) — defaults are per model (0 for `fast`, 256 for `balanced`/`thorough`), and an explicit flag always wins while unpassed values are preserved across re-runs. When the budget force-closes thinking, a required wrap-up (`REASONING_BUDGET_MESSAGE`, default `[budget reached — answer briefly in spoken form]`) is injected before the end-of-thinking tag so the cut lands on a clean hand-off instead of a ragged mid-thought dump; bootstrap always writes it into `llm.env` and heals env files that lack it. You can also edit `LLM_MODEL=`/`REASONING_BUDGET=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `MODEL_PATH`, ...) still win over the profile defaults.
 
-All profiles run with the same reasoning and context settings where their model supports it: `CTX=32768`, `REASONING_BUDGET=256` for `balanced` and `thorough` (`fast` runs `CTX=8192`, no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable, and the `REASONING_BUDGET_MESSAGE` wrap-up closes the draft cleanly when the budget is hit.
+All profiles use the same context ceiling: `CTX=16384` on `balanced`, `thorough`, and `fast` (changed 2026-10-17 — `balanced`/`thorough` dropped from 32768 after measuring −352 MB of KV/nvmap on this box; `fast` inherits the same cap for a uniform budget). HA prompts are ~2.5k tokens and the longest observed tool loop ~3.9k. Reasoning is `REASONING_BUDGET=256` for `balanced` and `thorough` (`fast` runs no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable, and the `REASONING_BUDGET_MESSAGE` wrap-up closes the draft cleanly when the budget is hit.
 
 ### Performance optimization campaigns (measured)
 
@@ -282,7 +282,7 @@ With the old `jetson_clocks` pinning (EMC held at max, CPU idle states disabled)
 | knob | value | why |
 |---|---|---|
 | `-np 1` | single slot | LFM2 short-conv state corrupts under co-batching (llama.cpp #29002); single caller anyway |
-| `-c 32768` | context tokens (8192 on `fast`) | matches long HA system prompt + history |
+| `-c 16384` | context tokens (all profiles) | HA prompts are ~2.5k; 16k frees ~350 MB vs 32k |
 | `-ctk/-ctv q8_0` | KV cache quant | ~half the KV RAM of f16, no quality hit observed |
 | `-b 1024 -ub 256` | batches | bounds CUDA workspace peak |
 | `--cache-reuse 256` | prompt cache | turns the HA Assist prompt into a prefix hit |
