@@ -1,18 +1,32 @@
 # super-soaker
 
-Ultra low-latency voice assistant stack for the **NVIDIA Jetson Orin Nano Super** (8 GB): a [LiquidAI LFM2.5](https://huggingface.co/collections/LiquidAI/lfm25) LLM (1.2B, 2.6B, or [8B-A1B](https://huggingface.co/LiquidAI/LFM2.5-8B-A1B) MoE — pick at install) with [DSpark](https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark) speculative decoding, tiny-en Whisper STT, and Kokoro-82M TTS — all three **built locally at pinned versions, running natively (no Docker), resident in RAM with none of it swapped**.
+[![License](https://img.shields.io/github/license/tweedge/super-soaker)](https://github.com/tweedge/super-soaker)
+[![Written By](https://img.shields.io/badge/written%20by-some%20nerd-red.svg)](https://chris.partridge.tech)
+[![Follow author on Bluesky](https://img.shields.io/bluesky/followers/tweedge.net)](https://bsky.app/profile/tweedge.net)
+[![Follow author on Mastodon](https://img.shields.io/mastodon/follow/108210086817505115?domain=https%3A%2F%2Fcybersecurity.theater)](https://cybersecurity.theater/@tweedge)
 
-Designed for a single caller (Home Assistant + [hass_local_openai_llm](https://github.com/skye-harris/hass_local_openai_llm) / Home Assistant Voice) where every millisecond of response latency is felt. The three services run in pipeline order and are named so it shows at a glance:
+A complete voice assistant stack for the **NVIDIA Jetson Orin Nano Super (8 GB)**: Whisper tiny/en for speech-to-text, an [LFM2.5](https://huggingface.co/collections/LiquidAI/lfm25) model with [DSpark](https://huggingface.co/LiquidAI/LFM2.5-2.6B-DSpark) speculative decoding for the assistant, and Kokoro-82M for text-to-speech. All three are built locally at pinned versions, run natively under systemd, and stay resident in RAM with none of it swapped. On this box, a page in swap is latency you can hear.
+
+It is built for one caller - Home Assistant's Assist pipeline through [hass_local_openai_llm](https://github.com/skye-harris/hass_local_openai_llm) or a Home Assistant Voice device - where the gap between "user stops talking" and "assistant starts talking" is the whole experience. This README covers installing and running it. The measurements, model shootout, RAM and power numbers, and rejected experiments live in [PERFORMANCE.md](PERFORMANCE.md).
 
 | # | service | function | protocol | port |
-|---|---------|----------|----------|------|
+|---|---|---|---|---|
 | 1 | `1-stt-wyoming-whisper-tiny` | speech → text (Whisper tiny/en, CUDA) | Wyoming | `tcp/10300` |
 | 2 | `2-llm-llama.cpp-super-soaker-managed` | text → text (LFM2.5 profile + DSpark draft) | OpenAI HTTP | `tcp/8080` |
 | 3 | `3-tts-wyoming-kokoro-82m` | text → speech (Kokoro-82M fp16, CUDA, streaming) | Wyoming | `tcp/10210` |
 
-## Quick start (new Jetson)
+The directory names encode pipeline order and function; the systemd units are `super-soaker-{stt,llm,tts}.service`.
 
-On a freshly flashed Jetson Orin Nano Super with JetPack 6.x (L4T r36.x, CUDA 12.6) and network access:
+## What you need
+
+- An NVIDIA Jetson Orin Nano Super with 8 GB of RAM, running JetPack 6.x (L4T r36.x, CUDA 12.6). This targets SM 8.7 and the L4T driver stack; a CUDA-13-linked build will not load on it.
+- About 20 GB of free disk during the build.
+- Network access for the one-time build and model download. The finished stack does not need it.
+- Time. The first build takes one to two hours because it compiles llama.cpp, CTranslate2, and ONNX Runtime from source for the Jetson.
+
+There is no Docker here, and that is deliberate. On a board where the OS, GPU, and models share one 8 GB pool, the daemon and per-container library copies cost hundreds of megabytes before a model loads. Native processes share one toolchain and one copy of every CUDA library. The full argument is in [PERFORMANCE.md](PERFORMANCE.md#why-native-and-not-docker).
+
+## Install
 
 ```bash
 git clone https://github.com/tweedge/super-soaker.git
@@ -22,349 +36,150 @@ sudo ./bootstrap.sh
 
 That is the whole install. `bootstrap.sh`:
 
-1. installs build toolchain + CUDA 12.6 + cuDNN + OpenBLAS (apt),
-2. builds **llama.cpp** (pinned `b11552` / `23b0202a1`), **CTranslate2** (pinned `4.5.0`, CUDA), and **ONNX Runtime** (pinned `v1.22.0`, CUDA) into `/opt/super-soaker`,
-3. creates two pinned Python venvs (`venv-stt`, `venv-tts`),
-4. downloads models with SHA-256 verification into `/var/lib/super-soaker`,
-5. installs three systemd services (enabled at boot, `Restart=always`, `MemorySwapMax=0` so service pages can never be swapped),
-6. sets power mode `MAXN_SUPER` (clocks boost under load, scale down at idle — nothing is pinned),
+1. installs the build toolchain, CUDA 12.6, cuDNN, and OpenBLAS from apt;
+2. builds llama.cpp (pinned `b11552` / `23b0202a1`), CTranslate2 (`4.5.0`, CUDA), and ONNX Runtime (`v1.22.0`, CUDA) into `/opt/super-soaker`;
+3. creates two pinned Python virtualenvs (`venv-stt`, `venv-tts`);
+4. downloads the model pair with SHA-256 verification into `/var/lib/super-soaker`;
+5. installs and enables three systemd services with `Restart=always` and `MemorySwapMax=0`, so service pages can never be swapped;
+6. sets the `MAXN_SUPER` power mode. Clocks boost under load and scale down at idle; nothing is pinned;
 7. waits for each service's built-in self-test to pass, then reboots.
 
-Re-running is safe (idempotent). Flags: `--skip-build` (reuse built wheels), `--no-reboot`, `--force-jobs` (see below), `--model {fast|balanced|thorough}` (default `balanced`; see "Model choice"). Service tuning lives in `/etc/super-soaker/*.env` (written once, preserved across re-runs).
+Re-running it is safe and is the normal way to change profiles. Flags are `--model {fast|balanced|thorough}`, `--reasoning-budget {N|off|on|auto}`, `--skip-build`, `--no-reboot`, and `--force-jobs`. Tuning lives in `/etc/super-soaker/*.env`, which is written once and preserved across re-runs.
 
-### Build threads: 1 by default, 2 maximum
+### Build parallelism
 
-The compile jobs are RAM-bound, not CPU-bound. ONNX Runtime's nvcc flash-attention kernels peak near **3.5 GB RSS per thread**, and the 8 GB Orin Nano Super shares that RAM with the GPU and the voice stack — running the build with high parallelism has wedged this machine (load 30, RAM and swap full, power reset needed). The build scripts enforce:
+The build is RAM-bound, not CPU-bound. ONNX Runtime's nvcc flash-attention kernels peak near 3.5 GB RSS per compile thread, and this board shares that RAM with the GPU. High parallelism has wedged this class of machine into a swap spiral that needed a power reset.
 
-| `JOBS` | behavior |
-|---|---|
-| `1` (default) | safe everywhere — **but expect the build to take a WHILE** (1–2 h) |
-| `2` | tested maximum on the 8 GB Orin Nano Super |
-| `>2` | **refused with an error** unless `--force` / `--force-jobs` is passed |
+`JOBS=1` is the default and safe everywhere, at the cost of a slow build. `JOBS=2` is the tested maximum on the 8 GB Orin Nano Super. Anything higher is refused unless `--force-jobs` is passed, and only makes sense on a 16 GB device such as the Orin NX:
 
-The `--force` escape hatch (build scripts) and `--force-jobs` (bootstrap.sh) exist for 16 GB devices such as the **Jetson Orin NX**, where the operator has the headroom to accept the risk: `sudo JOBS=4 ./bootstrap.sh --force-jobs`. On an 8 GB box, leave it alone and let it grind.
+```bash
+sudo JOBS=4 ./bootstrap.sh --force-jobs
+```
 
-### Optional: strip the desktop
+On an 8 GB box, leave it alone and let it grind.
 
-The stack does not need a GUI. If this machine is headless, `clean.sh` removes the GNOME desktop and idle services for several hundred MB of extra RAM. It is **strictly optional** and never called by `bootstrap.sh` — machines that still need their monitor output are unaffected:
+### Optional: remove the desktop
+
+The stack does not need a GUI. If this machine is headless, `clean.sh` removes the GNOME desktop and idle services for several hundred megabytes of extra RAM. It is strictly optional, never called by `bootstrap.sh`, and reversible:
 
 ```bash
 sudo ./clean.sh            # dry run: lists what would go
-sudo ./clean.sh --apply    # actually remove (reversible)
+sudo ./clean.sh --apply    # actually remove
 ```
 
-## End-to-end latency: when does speech start?
+## Choose a model
 
-The pipeline is: **user stops speaking → STT finalizes → LLM generates → TTS streams**. Two moments matter perceptually:
+All three profiles run the same frozen 30-scenario Home Assistant battery, so the comparisons are honest. The short version:
 
-- **reply-speech starts** — the first audio sample of the answer is played;
-- **reply-speech completes** — the last sample of the answer finishes.
-
-Component costs (measured on the box, services warm, MAXN_SUPER):
-
-| stage | cost | note |
-|---|---|---|
-| STT finalize (3 s utterance) | ~0.3–1.0 s | whisper tiny/en int8, CUDA; scales with utterance length |
-| LLM TTFT (warm) | 0.3–0.5 s | prompt-cache hit on the HA Assist prefix |
-| LLM decode | 42–90 tok/s (battery mean, by profile) | spec stack; templated traffic reaches 119–238 tok/s |
-| first sentence → TTS | ~8–12 tokens | TTS starts at the first sentence boundary |
-| TTS time-to-first-chunk | 0.48–0.68 s | Kokoro fp16, CUDA, Wyoming streaming |
-| TTS sustained | 5.2–7.1 s audio / s wall | ~5× faster than playback — never the bottleneck |
-
-### Worked example — typical short answer
-
-"One or two sentences" (25 tokens of text, ~6 s of reply audio), derived from the measured component costs on the optimized `balanced` profile:
-
-| milestone | time after user stops speaking |
-|---|---|
-| STT transcript ready | ~0.5 s |
-| LLM first token (warm) | ~0.8 s |
-| first sentence complete (TTS can start) | ~1.0 s |
-| **reply-speech starts** | **~1.5–1.7 s** |
-| **reply-speech completes** | **~7.5 s** (speech-start + 6 s of playback) |
-
-Speech-completion is dominated by *playback duration of the answer*, not synthesis: TTS generates ~5× faster than real time and streams sentence-by-sentence, so audio production never lags the speaker. Longer answers extend speech-complete proportionally but do not delay speech-start.
-
-### Cold vs warm
-
-| path | latency |
-|---|---|
-| warm (prompt cache hit, short reply) | speech starts ~1.5 s; completes ~answer length later |
-| cold (13.7k-token prompt, cache miss) | LLM prefill ~15.1 s (1007 tok/s) before first token; speech starts ~17 s |
-| service restart (model reload) | +2–4 s once, self-test then ready |
-
-The prompt cache (`--cache-reuse 256`) is what keeps the warm path warm: the static Home Assistant Assist prefix is reused across turns, so only the new utterance is prefilled.
-
-## Model choice: three serving profiles, one battery
-
-Three serving profiles share one battery (`bench/ha_benchmark.py` + `bench/ha_battery.json`: 20 tool scenarios from the HA Assist API surface + 10 factual/brevity scenarios, run identically against each config). **All performance numbers are indexed on tok/s** (the server's own decode timing); words/s is a prose artifact and is no longer reported. Raw results in `bench/results/` (`ha_A`–`ha_I`).
-
-### Performance as shipped (tok/s, after optimization)
-
-| profile | model | novel tok/s | templated tok/s | battery mean tok/s | warm TTFT | avg reply | tool acc | quality acc |
-|---|---|---|---|---|---|---|---|---|
-| **fast** | LFM2.5-1.2B-Instruct Q8_0 | ~83 | — | **84.4** | **0.19 s** | **0.49 s** | **85%** | 70% |
-| **balanced** (default) | LFM2.5-2.6B QAD-Q4_0 | **59.9** | **237.6** | 63.2 | 0.32 s | **1.38 s** | 90% | 80% |
-| **thorough** | LFM2.5-8B-A1B UD-IQ2_M | 38.1 | 119 | 41.6 | 0.51 s | 3.60 s | **95–100%** | **90%** |
-
-"Novel" = 12 unique prompts (free-form speech proxy); "templated" = identical-utterance probe (HA boilerplate ceiling — fixed tool JSON, repeated phrasing); "battery mean" = per-scenario decode tok/s across all 30 frozen scenarios. Battery accuracy is n=1 per scenario at temp 0.1, so it wobbles ±5–10% between runs (the 8B's archived `ha_D`/`ha_H` runs scored 100%/90%); tok/s and latency are stable. The two 1.2B/2.6B dense models share one quirk: "turn on the lights" sometimes maps to HassLightSet instead of HassTurnOn — worth a prompt nudge in HA's own tool descriptions if it shows up in practice.
-
-### super-soaker optimized vs original config (same battery, same box)
-
-| profile | metric | original | optimized | gain |
+| profile | model | decode (battery mean) | average reply | tool / quality accuracy |
 |---|---|---|---|---|
-| **balanced** | battery mean tok/s | 57.7 | 63.2 | 1.10x |
-| | novel tok/s | 55.3 | 59.9 | 1.08x |
-| | templated tok/s | 59.4 | **237.6** | **4.0x** |
-| | avg reply | 2.46 s | **1.38 s** | **1.78x** |
-| | accuracy | 90% / 80% | 90% / 80% | unchanged |
-| **fast** | battery mean tok/s | 46.5 | **84.4** | **1.81x** |
-| | novel tok/s | untested | 83.1 | unchanged |
-| | avg reply | 0.52 s | 0.49 s | 1.06x |
-| | accuracy | 85% / 70% | 85% / 70% | unchanged |
-| **thorough** | battery mean tok/s | 39.0 | 41.6 | 1.07x |
-| | novel tok/s | 34.6 | 38.1 | 1.10x |
-| | templated tok/s | 34.6 | **119** | **3.4x** |
-| | avg reply | 4.28 s | **3.60 s** | 1.19x |
-| | accuracy | 90% / 80% | 95% / 90% | equal or better |
+| `fast` | LFM2.5-1.2B-Instruct Q8_0 | 84.4 tok/s | 0.49 s | 85% / 70% |
+| `balanced` (default) | LFM2.5-2.6B QAD-Q4_0 | 63.2 tok/s | 1.38 s | 90% / 80% |
+| `thorough` | LFM2.5-8B-A1B UD-IQ2_M | 41.6 tok/s | 3.60 s | 95–100% / 90% |
 
-The fast profile's target moved from QAD-Q4_0 to **Q8_0** during its campaign (fidelity insurance, user preference): battery accuracy is *identical* at QAD-Q4_0/Q8_0/F16 (85%/70% at all three — the cap is the model, not the quant), and the table above compares un-optimized vs optimized **on the shipped Q8_0 target** so both columns are like-for-like. QAD-Q4_0 remains measurably faster on novel speech (99.9 vs 83.1 tok/s) if that trade is wanted later.
+`balanced` is the default because an assistant has to be disciplined about tool calls and facts without feeling slow, and after optimization it is not slow: 1.38 s average replies with 90% tool and 80% quality accuracy.
 
-The spread between "novel" and "templated" is the honest story of both campaigns: real assistant traffic (fixed tools, familiar phrasing) sits between the columns, closer to templated the more the home vocabulary repeats. Both optimizations keep the battery's accuracy at or above the original — no quality was traded.
+Pick `fast` if latency is all that matters. It is the quickest on every axis, with tool accuracy close to `balanced`, but it gives up the reasoning pass that lets the larger models check arithmetic and letter-counting.
 
-**Why balanced is the default:** the assistant must be disciplined about tool calls and facts without feeling slow, and after optimization it is not: replies take 1.38 s on average (was 2.28 s historically), tool 90%, quality 80% — agentic correctness within striking distance of the 1.2B's latency. A fourth profile — the 2.6B with reasoning disabled — was benchmarked and rejected: it over-triggers tools on non-commands and keeps the 2.6B memory cost.
+Pick `thorough` if correctness matters more than reply latency. The 8B-A1B is a reasoning-only MoE: it thinks before answering, so replies average about 3.6 s, but it is the strongest profile on tool use and factual quality.
 
-**Pick fast if** latency is all that matters: fastest on every axis (0.49 s avg reply, 84.4 tok/s battery mean) with tool accuracy close to balanced (85% vs 90%). What it gives up: self-corrected arithmetic and letter-counting (no reasoning pass to check itself).
+Only one LLM profile can be resident at a time. Two dense LLMs together measured 7.32 of 7.62 GB with 105 MB free, which is not a safe margin. Run one.
 
-**Pick thorough if** tool-call and answer correctness matter more than reply latency. The 8B-A1B is a reasoning-only MoE: it spends its 1.5B active parameters on a chain-of-thought pass before answering, so replies take ~3.6 s on average, but it is the strongest profile on tool accuracy (95–100%) and factual quality (90%). It also answers some scenarios the dense models cannot (reliable letter-counting, multi-digit arithmetic self-checks).
-
-**Only one LLM fits at a time:** measured 7.32/7.62 GB with both dense LLMs resident (105 MB free) — below any safe margin. The 8B-A1B is worse still: even at IQ2-class quants it needs ~4.3 GB of RAM by itself (see below). Run one.
-
-### RAM cost per profile (measured, LLM + DSpark draft + KV + nvgpu pool)
-
-| profile | resident LLM | peak (LLM+TTS concurrent) | fits with STT+TTS? |
-|---|---|---|---|
-| fast | ~2.6 GB | ~2.6 GB | yes, ~1.8 GB headroom |
-| balanced | ~3.0 GB | ~3.2 GB | yes, ~1.4 GB headroom |
-| thorough (UD-IQ2_M) | ~4.3 GB | ~4.8 GB (7.04/7.62 GB board) | yes, but only ~580 MB headroom |
-
-The 8B-A1B leaves little slack: every quant larger than UD-IQ2_M was measured and rejected (see "8B-A1B quant hunt" in AGENTS.md). Q4_0 (4.8 GB of weights) does not fit at all — it starts, then the decode collapses from 33 t/s to 2.4 t/s as the box thrashes. UD-IQ3_XXS completes the battery with the best quality score but pushes 321 MB into zram and peaks at 7.49/7.62 GB — a violation of the stack's no-swap rule and too close to the edge for a concurrent TTS peak. UD-Q2_K_XL fits (3 MB swap) but is dominated by UD-IQ2_M on every axis: slower decode, lower accuracy, more RAM. UD-IQ2_M is the only 8B quant that runs the whole battery with zero swap and real headroom.
-
-### Switching profiles
+Switching profiles rewrites `LLM_MODEL` in `/etc/super-soaker/llm.env` and fetches the matching SHA-256-pinned GGUF pair:
 
 ```bash
 sudo ./bootstrap.sh --model fast
-# or: sudo ./bootstrap.sh --model balanced (default)
-# or: sudo ./bootstrap.sh --model thorough
+sudo ./bootstrap.sh --model balanced
+sudo ./bootstrap.sh --model thorough
 ```
 
-On an installed node this rewrites `/etc/super-soaker/llm.env` (`LLM_MODEL=...`) and fetches the matching GGUF pair (sha256-pinned): LFM2.5-1.2B-Instruct Q8_0 + DSpark-Q8_0 (`fast`), LFM2.5-2.6B QAD-Q4_0 + DSpark-Q8_0 (`balanced`), or Unsloth LFM2.5-8B-A1B UD-IQ2_M + DSpark-Q8_0 (`thorough`). The thinking budget is set the same way: `sudo ./bootstrap.sh --reasoning-budget 256` (or `off`/`on`/`auto`) — defaults are per model (0 for `fast`, 256 for `balanced`/`thorough`), and an explicit flag always wins while unpassed values are preserved across re-runs. When the budget force-closes thinking, a required wrap-up (`REASONING_BUDGET_MESSAGE`, default `[budget reached — answer briefly in spoken form]`) is injected before the end-of-thinking tag so the cut lands on a clean hand-off instead of a ragged mid-thought dump; bootstrap always writes it into `llm.env` and heals env files that lack it. You can also edit `LLM_MODEL=`/`REASONING_BUDGET=` in `/etc/super-soaker/llm.env` and `systemctl restart super-soaker-llm`. Individual overrides (`CTX`, `MODEL_PATH`, ...) still win over the profile defaults.
+The reasoning budget is set the same way (`--reasoning-budget 256`, or `off`/`on`/`auto`). Defaults are per model: 0 for `fast`, 256 for `balanced` and `thorough`. An explicit flag always wins, and unpassed values are preserved across re-runs. If the budget force-closes thinking, a required wrap-up (`REASONING_BUDGET_MESSAGE`, which by default asks for a brief spoken answer) is injected before the end-of-thinking tag, so a cut lands on a clean hand-off instead of a ragged mid-thought dump. `bootstrap.sh` always writes it into `llm.env` and heals env files that lack it.
 
-All profiles use the same context ceiling: `CTX=16384` on `balanced`, `thorough`, and `fast` (changed 2026-10-17 — `balanced`/`thorough` dropped from 32768 after measuring −352 MB of KV/nvmap on this box; `fast` inherits the same cap for a uniform budget). HA prompts are ~2.5k tokens and the longest observed tool loop ~3.9k. Reasoning is `REASONING_BUDGET=256` for `balanced` and `thorough` (`fast` runs no reasoning). The 8B-A1B is a reasoning-only model — the budget bounds its chain-of-thought so voice replies stay predictable, and the `REASONING_BUDGET_MESSAGE` wrap-up closes the draft cleanly when the budget is hit.
+All profiles use a 16k context ceiling. HA prompts run about 2.5k tokens and the longest observed tool loop reached about 3.9k, so 16k keeps more than 4× headroom while saving roughly 350 MB versus 32k. Individual overrides such as `CTX` or `MODEL_PATH` still win over the profile defaults; edit `/etc/super-soaker/llm.env` and restart the service if you prefer to tune by hand.
 
-### Performance optimization campaigns (measured)
+The full profile results, the optimization campaign, the 8B quant hunt, and the RAM cost of each profile are in [PERFORMANCE.md](PERFORMANCE.md).
 
-Both reasoning profiles ship an optimized speculative-decoding stack plus a llama.cpp kernel patch (`deps/patches/mmvq-orin-crossover.patch`) extending the Orin MMVQ→MMQ crossover (upstream PR #28285 covered K-quants only) to IQ/simple quants (+4–10% on verify batches). The dense 2.6B and the 8B-A1B MoE need *different* spec tuning — same drafter, opposite economics:
+## Connect Home Assistant
 
-| knob | balanced (dense) | thorough (MoE) | why |
-|---|---|---|---|
-| `--spec-type` | `draft-dspark,ngram-mod` | `draft-dspark,ngram-mod` | ngram adds free accepted tokens on templated traffic, costs nothing on novel |
-| `--spec-draft-n-max` | 7 | 5 | dense verify is cheap → longer blocks pay; MoE expert-union traffic saturates with block length → shorter wins |
-| `--spec-draft-p-min` | off (default 0) | 0.4 | confidence truncation HURTS dense (loses accepted tokens for nothing) but helps MoE (prunes low-confidence tails that cost full expert traffic) |
-| drafter quant | Q8_0 | Q8_0 | acceptance is drafter-invariant (F16/Q4_K/Q8_0 all within noise) — the target distribution is the limiter; Q8_0 wins on cost |
-| target quant | QAD-Q4_0 | UD-IQ2_M | higher-fidelity targets do NOT buy acceptance (measured Q4_K_M→Q8_0: flat) and cost raw speed |
-| **fast verdict** | n_max 9, plain dspark, **Q8_0 target** | — | acceptance 2.99/step with the native drafter ⇒ trained block length wins; ngram/p-min/p-split/backend-sampling all neutral-or-worse; Q8_0 shipped for fidelity (battery accuracy identical at QAD-Q4_0/Q8_0/F16 — the cap is the model — see notes/07) |
+- **Local OpenAI LLM** → `http://<jetson-ip>:8080/v1`, server type `llama.cpp`, API key blank. Use the model alias from `curl http://<jetson-ip>:8080/v1/models`; it matches the installed GGUF, for example `LFM2.5-2.6B-QAD-Q4_0`.
+- **Wyoming STT** → `tcp://<jetson-ip>:10300`.
+- **Wyoming TTS** → `tcp://<jetson-ip>:10210`. The default voice is `af_heart`; all 53 Kokoro voices are available, with prefixes `a` (US English), `b` (UK English), `j` (Japanese), `z` (Chinese), `e` (Spanish), `f` (French), `h` (Hindi), `i` (Italian), and `p` (Brazilian Portuguese).
 
-Measured campaign results (tok/s, frozen battery + bench harness):
+## How it works
 
-| metric | 2.6B original → optimized | 8B original → optimized |
-|---|---|---|
-| raw batch-1 decode | 30.5 → 30.5 (1.0x) | 35.5 → 35.5 (1.0x) |
-| novel speech | 55.3 → 59.9 (1.08x) | 34.6 → 38.1 (1.10x) |
-| templated voice traffic | 59.4 → **237.6 (4.0x)** | 34.6 → **119 (3.4x)** |
-| battery mean tok/s | 57.7 → 63.2 (1.10x) | 39.0 → 41.6 (1.07x) |
-| battery avg reply | 2.46 s → **1.38 s (1.78x)** | 4.28 s → 3.60 s (1.19x) |
-| battery accuracy | 90/80 → 90/80 | 90/80 → 95/90 |
+All three services start at boot, restart on failure, and run as the unprivileged `super-soaker` user in the `video` and `render` groups. That second group matters: without it, CUDA silently reports zero devices and everything downstream fails with unhelpful errors.
 
-Why the spread: batch-1 GEMVs on this GPU stream at a fixed ~24% (IQ-LUT quants) or ~37% (block quants) of LPDDR5 bandwidth, so non-spec decode is capped by bytes-per-token (30–48 tok/s on these models). Speculative decoding escapes that cap by turning hundreds of skinny GEMVs into fat verify GEMMs — but only accepted tokens count. Dense verify reads weights once per block (break-even ≈ 1.2 accepted/step — every acceptance point is profit), while 4-of-32 MoE verify traffic saturates with block length (needs 5+). Acceptance itself is capped at ~2.3–3.5/step on novel speech for both models: the DSpark drafter was distilled against an F16 target and drifts on quantized targets (llama.cpp issue #25618) — measured invariant across drafter quants and target quants. Templated HA traffic accepts 5+ and hits the ceilings above. Full logs, rejected experiments (F16 drafter, p-min, TQ2_0, custom quants, micro knobs, target-fidelity sweeps) and the constraint analyses: `notes/04-decode-optimization-research.md` (8B) and `notes/05-2.6b-optimization.md` (2.6B).
+**STT** is [wyoming-faster-whisper](https://github.com/rhasspy/wyoming-faster-whisper) 3.3.1 on CUDA via a locally built CTranslate2, because the PyPI aarch64 wheel is CPU-only. It runs Whisper `tiny` with language fixed to `en`, int8 compute, and beam 5. On start it warms CUDA with two transcription round-trips, then runs its self-test.
 
-## Design tradeoffs: quality vs intelligence vs speed
+**LLM** is `llama-server` at the pinned commit, built with `GGML_CUDA_FA_ALL_QUANTS`, CUDA graphs, and `GGML_CUDA_NO_VMM` (the Jetson iGPU VMM workaround). The model is not in the service name: `LLM_MODEL` in `/etc/super-soaker/llm.env` selects the profile, its target GGUF, and its DSpark-Q8_0 drafter. The server runs a single slot because LFM2's short-conv state corrupts under co-batching, and this stack has one caller anyway. It uses q8_0 KV cache, `--cache-reuse 256` for the Home Assistant prefix, and a reasoning budget that keeps thinking bounded.
 
-The guiding rule: **maximum performance inside a hard 8 GB RAM envelope, while tolerating a slightly slower reply when quality would otherwise suffer.** Every component below is the highest-quality option that still fits and keeps the conversation fluid.
+**TTS** is [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) 0.5.0 on a locally built ONNX Runtime 1.22 with the CUDA execution provider. The Wyoming wrapper is vendored into the service directory, based on [nullable-eth/kokoro-wyoming](https://github.com/nullable-eth/kokoro-wyoming). It streams audio at the first sentence boundary, strips markdown, thinking blocks, tool JSON, and stray angle brackets before phonemization, and pre-sizes its CUDA arena with a full 503-phoneme batch at boot so no request can grow it into an OOM. Synthesis is serialized behind a lock; concurrent requests queue instead of fighting over the arena cap.
 
-### LLM — LFM2.5 family + DSpark-Q8_0 draft (profile-selected)
-
-| decision | chosen | rejected | why |
-|---|---|---|---|
-| model size | 1.2B / 2.6B / 8B-A1B (`fast` / `balanced` / `thorough`) | 7B dense, 20B+ | the three profiles are the LFM2.5 sizes that fit alongside STT+TTS; dense 8B-class weights do not fit at usable quants (see quant hunt below) |
-| target quant | QAD-Q4_0 (dense), UD-IQ2_M (8B-A1B) | Q4_K_M, Q5_K_M for the 8B | QAD (quantization-aware distill) is LiquidAI's own quality-preserving recipe; for the 8B-A1B MoE only IQ2-class quants fit — Unsloth's UD-IQ2_M was the measured winner of a four-quant shootout |
-| draft model | DSpark-Q8_0 (on) | no draft, F16/Q4 draft | spec decoding is the one lever past the batch-1 streaming cap (measured up to 4.0x on templated traffic, quality-neutral); acceptance is drafter-quants-invariant so Q8_0 wins on cost; F16 drafter is a measured net loss on iGPU |
-| KV cache | q8_0 @ 32k ctx | f16 | halves KV RAM with no observed quality hit; keeps the long HA prompt + history in context instead of truncating it (intelligence win) |
-| reasoning budget | 256 tokens | 0 / unlimited | bounded scratch thinking: answers keep some reasoning quality, latency stays predictable; unlimited thinking would blow the reply budget. A required `REASONING_BUDGET_MESSAGE` wrap-up is injected at force-close so a budget cut never dumps a ragged draft |
-| runtime | llama.cpp, single slot | vLLM, batching | vLLM's pool + scheduler overhead measured 2.8–3.3 GB earlier; single-caller makes batching pure loss. `FA_ALL_QUANTS` + CUDA graphs recover the speed instead |
-
-Net effect: a slightly slower per-token rate than a bigger model would need to be *fast at all costs* — accepted only where it buys answer quality. The speculative-decoding stack is the opposite trade: free speed that does not touch quality, so it is on by default.
-
-### STT — Whisper tiny/en, int8, beam 5
-
-| decision | chosen | rejected | why |
-|---|---|---|---|
-| model | tiny/en | small, medium | small/medium add RAM and latency for gains that matter little on clean home-assistant audio; tiny is highly accurate on clear near-field speech |
-| language | fixed `en` | auto-detect | skipping language detection saves a model pass and removes misdetection flaps |
-| compute type | int8 | float16 | int8 on Orin is ~2× faster with negligible WER change for tiny |
-| beam size | 5 | greedy (1) | beam 5 measurably improves name/command recognition for pennies in latency — quality bought, not sold |
-| VAD/streaming | wyoming chunked | whole-utterance only | chunks start decoding as audio arrives |
-
-### TTS — Kokoro-82M fp16 (ONNX Runtime, CUDA, streaming)
-
-| decision | chosen | rejected | why |
-|---|---|---|---|
-| engine | Kokoro-82M | Piper, espeak | Kokoro's prosody/naturalness is a clear tier above Piper at comparable cost |
-| precision | fp16 | int8, fp32 | int8 is *slower* on this GPU (quantized ops fall back to CPU) and dulls prosody; fp32 wastes RAM for no audible gain. fp16 measured clean and fast |
-| runtime | ONNX Runtime CUDA | PyTorch, CPU | PyTorch path measured +1.5–1.9 GB and OOM'd the box; CPU synthesis is slower than real time (rtf 1.4–1.6) — unusable |
-| delivery | Wyoming streaming | buffer-everything | speech starts at the first sentence boundary while the LLM is still generating; buffered TTS would add the full synthesis wait to every reply |
-| arena cap | 1024 MB | unbounded | caps GPU/RAM arena so the LLM's pool cannot be squeezed out |
-
-### System — native processes, no Docker
-
-| decision | chosen | rejected | why |
-|---|---|---|---|
-| packaging | systemd + pinned builds | Docker images | Docker daemon + per-container library copies cost several hundred MB and pushed the box into a swap spiral; native processes share one toolchain and one copy of every library |
-| swap policy | `MemorySwapMax=0` | default swapping | with 8 GB, any swapped service page is latency jitter; nothing may swap, and the budget guarantees nothing has to |
-| power mode | `MAXN_SUPER` (nvpmodel; clocks un-pinned) | `jetson_clocks` pinning, lower nvpmodel modes | MAXN_SUPER raises the frequency ceilings so decode boosts to max under load (measured: EMC 2.13 → 3.2 GHz, decode 52.8 tok/s unlocked vs 45–56.5 locked); pinning clocks high cost ~1.15 W constant idle power and was removed — an always-on assistant is idle ~99% of the time |
-
-## RAM budget (measured on the live box, L4T 36.4.4)
-
-All figures are `MemTotal − MemFree − Cached` deltas at 100 ms sampling, which captures GPU-driver (`nvgpu`) kernel memory that `docker stats`/RSS hide. The GPU shares system RAM on Jetson, so "GPU memory" here is RAM.
-
-| component | resident | peak (LLM+TTS concurrent) |
-|---|---|---|
-| LLM fast (llama.cpp + nvgpu pool) | ~2.6 GB | flat under load |
-| LLM balanced | ~3.0 GB | flat under load |
-| LLM thorough (UD-IQ2_M + DSpark) | ~4.3 GB | ~4.8 GB |
-| STT (whisper tiny/en int8) | ~0.7 GB | flat |
-| TTS (kokoro fp16, ONNX CUDA; arena pre-sized at start) | ~1.3 GB | ~1.3 GB (flat — high-water reached at boot) |
-| OS (headless) | ~0.8 GB | — |
-| **total with default balanced profile** | **~5.6 GB / 7.4 GB** | **~6.2 GB / 7.4 GB** |
-| **total with fast profile** | **~5.2 GB / 7.4 GB** | **~5.6 GB / 7.4 GB** |
-| **total with thorough profile** | **~6.9 GB / 7.4 GB** | **~7.0 GB / 7.4 GB** |
-
-~1.2 GB headroom at peak on the default balanced profile (~1.8 GB on fast), ~0.5 GB on thorough (measured 7.04/7.62 GB peak with zero swap — see the quant hunt notes); every service unit pins `MemorySwapMax=0` and `vm.swappiness=10`, so the answer to "is anything swapped?" is *no* by construction. Verify with `grep VmSwap /proc/$(pgrep -f serve.sh)/status` or `free -h`.
-
-2026-10-17 (TTS arena change): the TTS now sizes its CUDA arena at service start with a full-size 503-phoneme batch, so the arena high-water (~0.87 GB) is resident from boot instead of growing on the first long answer (the growth was what pushed the box into a global OOM mid-request). Measured on the live box, default balanced profile: TTS nvmap flat at ~1.2 GB across 8–99-word requests and full-size batches, zero swap, ~0.2–0.8 GB available depending on page-cache state (88–207 MB free, 0.3–0.9 GB reclaimable cache). Long answers no longer need mid-request headroom, but the steady-state figure is now ~0.2–0.8 GB rather than the ~1.2 GB peak number above, which predates the change.
-
-Earlier docker-based deployments of this stack did **not** fit: the daemon, per-container library duplication, and the LLM's GPU pool together pushed the box into a zram swap spiral (TTS OOM-killed, machine wedged). Running native is the make-or-break difference.
-
-## Power draw (measured, `tegrastats` VDD_IN)
-
-Whole-board input power at `MAXN_SUPER`, clocks un-pinned (VDD_IN min/median/max sampled at 0.5 s, 2026-10-14, balanced profile):
-
-| state | VDD_IN | note |
-|---|---|---|
-| boot idle (services stopped) | ~4.8 W | 4.77–4.85 W measured |
-| stack resident, no traffic | ~4.8 W | three models in RAM, GPU idle — resident weights cost almost nothing at idle |
-| LLM decode | ~17 W peak | brief bursts; ~16.5–17 W sustained alongside TTS synthesis, well under the 25 W MAXN_SUPER envelope |
-
-With the old `jetson_clocks` pinning (EMC held at max, CPU idle states disabled), stack-resident idle measured ~5.95 W — the ~1.15 W the lock burned while doing nothing is why it was removed; decode itself measured the same either way (EMC boosts 2.13 → 3.2 GHz under load). Profile choice barely moves idle power (resident vs services-stopped differed by ~0.04 W in the same session). In practice: an always-on voice assistant costs about **5 W idle**, with brief **17 W bursts** during replies. At €0.30/kWh that is roughly €13/year for the compute; the rest of the board (NVMe, display if attached) adds a little. Speech-completion latency, not power, is the binding constraint on this box.
-
-## Pointing Home Assistant at it
-
-- *Local OpenAI LLM* → `http://<jetson-ip>:8080/v1`, server type **llama.cpp**, model `LFM2.5-2.6B` (or whatever the installed profile's alias is — check `curl http://<jetson-ip>:8080/v1/models`), API key blank.
-- *Wyoming STT* → `tcp://<jetson-ip>:10300`.
-- *Wyoming TTS* → `tcp://<jetson-ip>:10210`, voice e.g. `af_heart` (53 Kokoro voices; prefix `a`=US, `b`=UK, `j`=ja, `z`=zh, `e`=es, `f`=fr, `h`=hi, `i`=it, `p`=pt-BR).
-
-## Service internals
-
-**1-stt-wyoming-whisper-tiny** — [wyoming-faster-whisper](https://github.com/rhasspy/wyoming-faster-whisper) 3.3.1 on CUDA via a locally built CTranslate2 (the PyPI aarch64 wheel is CPU-only). Model `tiny`, language `en`, compute int8, beam 5. On start it warms CUDA with two transcription round-trips, then runs its self-test (espeak-ng speaks "hello world", the service must transcribe it).
-
-**2-llm-llama.cpp-super-soaker-managed** — llama-server at the pinned commit with `GGML_CUDA_FA_ALL_QUANTS`, CUDA graphs, and `GGML_CUDA_NO_VMM` (Jetson iGPU VMM crash workaround, llama.cpp #29142). The model is not in the service name: `LLM_MODEL` in `/etc/super-soaker/llm.env` selects the profile, which picks the target GGUF and its `DSpark-Q8_0` drafter (`--spec-type draft-dspark`).
-
-| knob | value | why |
-|---|---|---|
-| `-np 1` | single slot | LFM2 short-conv state corrupts under co-batching (llama.cpp #29002); single caller anyway |
-| `-c 16384` | context tokens (all profiles) | HA prompts are ~2.5k; 16k frees ~350 MB vs 32k |
-| `-ctk/-ctv q8_0` | KV cache quant | ~half the KV RAM of f16, no quality hit observed |
-| `-b 1024 -ub 256` | batches | bounds CUDA workspace peak |
-| `--cache-reuse 256` | prompt cache | turns the HA Assist prompt into a prefix hit |
-| `--reasoning-budget 256` | thinking budget | enough scratch to finish drafts, low latency |
-| `--reasoning-budget-message` | force-close wrap-up | `[budget reached — answer briefly in spoken form]` before the end-of-thinking tag — no ragged mid-thought dumps |
-| `GGML_CUDA_NO_VMM=ON` | | avoids 32 GB VMM reservation crash on Jetson (#29142) |
-| `GGML_CUDA_GRAPHS=ON` | | decode-speed essential on Orin |
-
-**3-tts-wyoming-kokoro-82m** — [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) 0.5.0 on a locally built ONNX Runtime 1.22 (CUDA EP; no aarch64 CUDA wheel exists on PyPI — 1.29+ links CUDA 13, which the L4T driver cannot load). The Wyoming wrapper is a vendored copy of [nullable-eth/kokoro-wyoming](https://github.com/nullable-eth/kokoro-wyoming), internalized at `services/3-tts-wyoming-kokoro-82m/kokoro_wyoming.py`:
-
-- Wyoming streaming: audio starts at the first sentence boundary
-- text sanitation before phonemization (`speech_clean.py`): markdown, thinking/reasoning blocks (including half-open ones from truncated streams), tool-call blocks and JSON payloads, stray angle brackets — espeak reads `<` as "less than", `*` as "asterisk". Unit-tested (25 cases in `test_clean.py`) and gated at every service start
-- CUDA arena: exact-size growth (`arena_extend_strategy=kSameAsRequested`), 32 MB cuDNN workspace clamp, `cudnn_conv_algo_search=DEFAULT`, capped at `KOKORO_GPU_MEM_MB=1024`. A full 503-phoneme batch needs ~0.87 GB of arena; power-of-two growth doubled it and the kernel OOM-killed the service mid-answer (2026-10-17), which is why the growth strategy and algo search are pinned here
-- boot warmup synthesizes a full-size 503-phoneme batch (`longform.py`) before the port opens: the arena's high-water mark is reached at service start, so no request can grow it, and an allocation failure fails the start instead of a request
-- **fp16 model** — validated to fit in RAM; `int8` is *slower* on this GPU (quantized ops fall back to CPU), so don't use it. `q8f16` was also measured and rejected: it saves ~70 MB of weights but kokoro-onnx 0.5.0 sends `speed` as int32 while that export expects float (`InvalidArgument`), and activations are unchanged
-- fails fast if `CUDAExecutionProvider` is missing (no silent CPU fallback)
-
-## Self-tests
-
-Each service ships a stdlib-only end-to-end test that runs at every start (`SELF_TEST=on` in the env files) and can be run by hand:
-
-```bash
-sudo -u super-soaker /opt/super-soaker/venv-stt/bin/python3 \
-    /opt/super-soaker/services/1-stt-wyoming-whisper-tiny/selftest.py
-sudo -u super-soaker python3 \
-    /opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py
-sudo -u super-soaker /opt/super-soaker/venv-tts/bin/python3 \
-    /opt/super-soaker/services/3-tts-wyoming-kokoro-82m/selftest.py
-```
-
-- **STT**: speaks "hello world" with espeak-ng, asserts the transcript round-trips.
-- **LLM**: model list, warmup completions, streaming speed (TTFT + tok/s), tool-calling round trip (what `hass_local_openai_llm` needs), prompt-cache probe.
-- **TTS**: plain + streaming synthesis plus a worst-case 503-phoneme long-form synthesis (the largest batch the runtime can emit), asserts 24 kHz audio, plausible duration, non-silence RMS, and streaming first-chunk < 3 s (10 s for the long-form gate).
-
-## Operations
+## Day-2 operations
 
 ```bash
 journalctl -u super-soaker-llm -f          # logs
 systemctl restart super-soaker-tts         # bounce one service
-free -h; swapon --show                     # RAM / swap picture
+free -h; swapon --show                     # RAM and swap picture
+grep VmSwap /proc/$(pgrep -f serve.sh)/status   # should be zero for every service
 ```
 
-Layout on disk:
+On disk:
 
 ```
-/opt/super-soaker/          builds, venvs, service code, pinned wheels (cache/)
-/var/lib/super-soaker/      models, whisper hub cache (owned by super-soaker)
+/opt/super-soaker/          builds, virtualenvs, service code, pinned wheels (cache/)
+/var/lib/super-soaker/      models and caches, owned by super-soaker
 /etc/super-soaker/          per-service env files (llm.env, stt.env, tts.env)
 /etc/systemd/system/        super-soaker-{llm,stt,tts}.service
 ```
 
-## Benchmarks
+The env files are the supported tuning surface. They are written once by `bootstrap.sh` and preserved on re-runs, so local edits survive. `LLM_MODEL`, `REASONING_BUDGET`, `CTX`, `MODEL_PATH`, and `DRAFT_PATH` are the ones most people touch; `stt.env` and `tts.env` expose the model, beam size, voice, speed, and arena cap.
 
-The profile-comparison battery lives in `bench/ha_benchmark.py` + `bench/ha_battery.json` (30 scenarios: 20 tool + 10 quality, identical prompts per profile). Per-scenario and decode results carry **tok/s** (`tok_s`, from the server's own `timings.predicted_per_second`) alongside latency. Archived results in `bench/results/`: `ha_A`–`ha_C` (pre-optimization era, words/s), `ha_D` (8B original config), `ha_E`/`ha_F` (2.6B original/optimized), `ha_G`/`ha_H` (8B original/optimized), `ha_I` (1.2B as shipped). To re-run against the live service:
+Every service unit sets `MemorySwapMax=0`, and `bootstrap.sh` sets `vm.swappiness=10`. Nothing should be swapped by construction. If `VmSwap` is not zero, something is wrong; check `free -h` and whether another process is eating the budget.
+
+## Self-tests
+
+Each service ships a stdlib-only, end-to-end self-test that runs at every start (`SELF_TEST=on`) and can be run by hand:
+
+```bash
+sudo -u super-soaker /opt/super-soaker/venv-stt/bin/python3 \
+    /opt/super-soaker/services/1-stt-wyoming-whisper-tiny/selftest.py
+
+sudo -u super-soaker python3 \
+    /opt/super-soaker/services/2-llm-llama.cpp-super-soaker-managed/selftest.py
+
+sudo -u super-soaker /opt/super-soaker/venv-tts/bin/python3 \
+    /opt/super-soaker/services/3-tts-wyoming-kokoro-82m/selftest.py
+```
+
+The STT test speaks "hello world" with espeak-ng and asserts the transcript round-trips. The LLM test checks the model list, warmup completions, streaming speed, a tool-calling round trip like the one `hass_local_openai_llm` uses, and prompt-cache behavior. The TTS test covers plain and streaming synthesis plus a worst-case 503-phoneme long-form batch, asserting 24 kHz audio, plausible duration, non-silence RMS, and a first streaming chunk under 3 s (10 s for the long-form gate).
+
+## Troubleshooting
+
+- **The build thrashes or the machine wedges.** You raised `JOBS`. Go back to 1, or 2 at most on this board.
+- **The LLM service exits at boot.** Check `journalctl -u super-soaker-llm` for an unknown `LLM_MODEL` or a missing model file. Legacy names in `llm.env` are still accepted, and re-running `bootstrap.sh` heals them.
+- **CUDA reports zero devices.** The service user is missing the `video` or `render` group. `usermod -aG video,render super-soaker` and restart the services.
+- **A service restart-loops.** Its self-test is failing. Run the matching command above by hand; it prints the actual failure instead of the systemd wrapper.
+- **The first reply after a restart is very slow.** That is a cold prompt cache. The static HA Assist prefix prefills at roughly 15 s cold versus 0.3 s warm; it is a one-time cost per context change.
+- **The TTS dies mid-answer.** Check whether the arena cap was lowered or a second synthesis was allowed to run concurrently. The default `KOKORO_GPU_MEM_MB=1024` is sized for a full 503-phoneme batch, and the service serializes synthesis for a reason.
+- **Home Assistant gets no tool calls.** Confirm the model alias from `/v1/models` and run the LLM self-test's tool-calling probe. The dense models occasionally map "turn on the lights" to `HassLightSet` instead of `HassTurnOn`; a nudge in HA's own tool descriptions is the fix, not a server change.
+- **Home Assistant hears nothing.** Confirm its Wyoming STT endpoint points at `tcp://<jetson-ip>:10300`, then run the STT self-test. If transcripts work but replies do not, check the LLM endpoint and the model alias.
+
+## Development
+
+The dependency builds are in `deps/`: `build-llamacpp.sh`, `build-ctranslate2.sh`, `build-onnxruntime.sh`, and `limit-jobs.sh`, the shared RAM guard. Every dependency is a pinned tag or commit, and wheels land in `/opt/super-soaker/cache` for offline rebuilds. The local llama.cpp patch in `deps/patches/mmvq-orin-crossover.patch` extends the Orin MMVQ→MMQ crossover to IQ and simple quants, worth 4–10% on speculative verify batches.
+
+The Home Assistant battery lives in `bench/ha_benchmark.py` and `bench/ha_battery.json`; archived results are in `bench/results/`. To run it against a live service:
 
 ```bash
 python3 bench/ha_benchmark.py --base-url http://127.0.0.1:8080 \
     --model <alias from /v1/models> --label my-run
 ```
 
-The interactive bench also lives in `bench/` (the LLM-only sweeps from the earlier docker era are documented in `notes/`):
+`bench/bench_openai.py`, `bench/quality_check.py`, and `bench/matrix.sh` are the older interactive sweeps. `scripts/fetch-models.sh` pulls extra GGUFs for quant matrices, and `scripts/quantize-8b-variants.sh` holds the custom 8B recipes.
 
-```bash
-python3 bench/bench_openai.py      # real-world OpenAI suite
-python3 bench/quality_check.py     # quality battery
-bash bench/matrix.sh               # see script for sub-sweeps
-```
-
-Extra GGUFs for sweep matrices can be fetched with `scripts/fetch-models.sh` (resolves against the LiquidAI and Unsloth GGUF repos).
-
-## Development notes
-
-- `notes/` — design notes and the measured migration history (why native, why fp16, why one slot, etc.).
-- `deps/` — the pinned build scripts (`build-llamacpp.sh`, `build-ctranslate2.sh`, `build-onnxruntime.sh`) plus `limit-jobs.sh`, the shared RAM guard that keeps compile parallelism at 1–2 threads. Every dependency is a pinned tag or commit; wheels land in `/opt/super-soaker/cache` for offline rebuilds.
-- Jetson details: SM 8.7 (Orin), L4T r36.x / CUDA 12.6, cuDNN 9 from the L4T repo. `/dev/nvhost*` access comes from the `video` group (the `super-soaker` service user is in it).
-
-## Prerequisites (for reference — bootstrap.sh installs all of this)
-
-1. **JetPack 6.x** (L4T r36.x, CUDA 12.6) — targets SM 8.7 and the L4T driver stack.
-2. **Network** for the one-time build/download; the finished stack needs none.
-3. **Disk**: ~20 GB free during builds (sources + wheels + models).
+For the measured history and the reasoning behind the defaults, read [PERFORMANCE.md](PERFORMANCE.md) and [AGENTS.md](AGENTS.md). The latter is the institutional knowledge file: methodology, quirks, and the things that were tried and rejected so nobody has to rediscover them.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. This project is not affiliated with NVIDIA, LiquidAI, or the upstream projects it builds on. Model weights and those upstream projects keep their own licenses.
