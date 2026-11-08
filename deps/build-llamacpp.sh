@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # deps/build-llamacpp.sh — build llama.cpp (CUDA, SM 87) at a pinned tag.
 #
-# Pin: b11552 (23b0202a1) — the exact build validated by the super-soaker
-# self-test/bench (system_fingerprint "b11552-23b0202a1"). Flags mirror the
-# original Dockerfile: FA_ALL_QUANTS + GRAPHS on, GGML_CUDA_NO_VMM=ON (Jetson
-# iGPU VMM crash workaround, llama.cpp #29142).
+# Pin: v0.9.0 (cd959bae99) — the release that adds LFM3 support (llama.cpp
+# #31252, LFM3-1.7B needs >= b11960) and the LFM3 spec-decode plumbing (#31598).
+# It is the exact build validated by the super-soaker self-test/bench for the
+# `frontier` profile, and the LFM2.5 profiles pass their self-test on it too.
+# Flags mirror the original Dockerfile: FA_ALL_QUANTS + GRAPHS on, GGML_CUDA_NO_VMM=ON
+# (Jetson iGPU VMM crash workaround, llama.cpp #29142).
 #
 # Output: /opt/super-soaker/llama.cpp/{bin,lib,include}
 set -euo pipefail
 
-LLAMA_TAG="${LLAMA_TAG:-b11552}"
-LLAMA_COMMIT="23b0202a189c44a54625aadcb37a946dd1d6278d"   # pinned: b11552
+LLAMA_TAG="${LLAMA_TAG:-v0.9.0}"
+LLAMA_COMMIT="cd959bae99ff4bed22bef2604f45241c09bbb8c8"   # pinned: v0.9.0
 CUDA_ARCH="${CUDA_ARCH:-87}"
 SRC_ROOT="${SRC_ROOT:-/opt/super-soaker/build}"
 PREFIX="${PREFIX:-/opt/super-soaker/llama.cpp}"

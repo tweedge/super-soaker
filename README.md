@@ -69,13 +69,14 @@ sudo ./clean.sh --apply    # actually remove
 
 ## Choose a model
 
-All three profiles run the same frozen 30-scenario Home Assistant battery, so the comparisons are honest. The short version:
+All four profiles run the same frozen 30-scenario Home Assistant battery, so the comparisons are honest. The short version:
 
 | profile | model | decode (battery mean) | average reply | tool / quality accuracy |
 |---|---|---|---|---|
 | `fast` | LFM2.5-1.2B-Instruct Q8_0 | 84.4 tok/s | 0.49 s | 85% / 70% |
 | `balanced` (default) | LFM2.5-2.6B QAD-Q4_0 | 63.2 tok/s | 1.38 s | 90% / 80% |
 | `thorough` | LFM2.5-8B-A1B UD-IQ2_M | 41.6 tok/s | 3.60 s | 95–100% / 90% |
+| `frontier` | LFM3-1.7B QAD-Q4_0 | 75–97 tok/s (steady) | 1.6–2.3 s | 85–90% / 80–90% |
 
 `balanced` is the default because an assistant has to be disciplined about tool calls and facts without feeling slow, and after optimization it is not slow: 1.38 s average replies with 90% tool and 80% quality accuracy.
 
@@ -83,17 +84,20 @@ Pick `fast` if latency is all that matters. It is the quickest on every axis, wi
 
 Pick `thorough` if correctness matters more than reply latency. The 8B-A1B is a reasoning-only MoE: it thinks before answering, so replies average about 3.6 s, but it is the strongest profile on tool use and factual quality.
 
+Pick `frontier` for Liquid's newest model on the same hardware. LFM3-1.7B is a tri-hybrid (13 gated short convolutions, 5 sliding-window and 6 global attention layers, 256K-context capable) that Liquid's own benchmarks place above LFM2.5-2.6B despite 35% fewer parameters. On this box's frozen battery it ties `balanced` or beats it on accuracy while running faster once its ngram-mod speculative mode is warm, at about 5.3 GB peak (no swap). It always thinks first, so its reasoning budget is tuned to land the wrap-up inside a voice-length answer. It has no DSpark drafter — Liquid publishes DSpark only for LFM2.5 — so it uses the drafter-free `ngram-mod` speculative mode, which is quality-neutral and pays off on Home Assistant's templated tool traffic.
+
 Only one LLM profile can be resident at a time. Two dense LLMs together measured 7.32 of 7.62 GB with 105 MB free, which is not a safe margin. Run one.
 
-Switching profiles rewrites `LLM_MODEL` in `/etc/super-soaker/llm.env` and fetches the matching SHA-256-pinned GGUF pair:
+Switching profiles rewrites `LLM_MODEL` in `/etc/super-soaker/llm.env` and fetches the matching SHA-256-pinned GGUF (plus a DSpark drafter where one exists):
 
 ```bash
 sudo ./bootstrap.sh --model fast
 sudo ./bootstrap.sh --model balanced
 sudo ./bootstrap.sh --model thorough
+sudo ./bootstrap.sh --model frontier
 ```
 
-The reasoning budget is set the same way (`--reasoning-budget 256`, or `off`/`on`/`auto`). Defaults are per model: 0 for `fast`, 256 for `balanced` and `thorough`. An explicit flag always wins, and unpassed values are preserved across re-runs. If the budget force-closes thinking, a required wrap-up (`REASONING_BUDGET_MESSAGE`, which by default asks for a brief spoken answer) is injected before the end-of-thinking tag, so a cut lands on a clean hand-off instead of a ragged mid-thought dump. `bootstrap.sh` always writes it into `llm.env` and heals env files that lack it.
+The reasoning budget is set the same way (`--reasoning-budget 256`, or `off`/`on`/`auto`). Defaults are per model: 0 for `fast`, 160 for `frontier`, 256 for `balanced` and `thorough`. LFM3 always thinks first, and 160 lands its wrap-up inside a voice-length answer on this battery (see PERFORMANCE.md). An explicit flag always wins, and unpassed values are preserved across re-runs. If the budget force-closes thinking, a required wrap-up (`REASONING_BUDGET_MESSAGE`, which by default asks for a brief spoken answer) is injected before the end-of-thinking tag, so a cut lands on a clean hand-off instead of a ragged mid-thought dump. `bootstrap.sh` always writes it into `llm.env` and heals env files that lack it.
 
 All profiles use a 16k context ceiling. HA prompts run about 2.5k tokens and the longest observed tool loop reached about 3.9k, so 16k keeps more than 4× headroom while saving roughly 350 MB versus 32k. Individual overrides such as `CTX` or `MODEL_PATH` still win over the profile defaults; edit `/etc/super-soaker/llm.env` and restart the service if you prefer to tune by hand.
 
@@ -111,7 +115,7 @@ All three services start at boot, restart on failure, and run as the unprivilege
 
 **STT** is [wyoming-faster-whisper](https://github.com/rhasspy/wyoming-faster-whisper) 3.3.1 on CUDA via a locally built CTranslate2, because the PyPI aarch64 wheel is CPU-only. It runs Whisper `tiny` with language fixed to `en`, int8 compute, and beam 5. On start it warms CUDA with two transcription round-trips, then runs its self-test.
 
-**LLM** is `llama-server` at the pinned commit, built with `GGML_CUDA_FA_ALL_QUANTS`, CUDA graphs, and `GGML_CUDA_NO_VMM` (the Jetson iGPU VMM workaround). The model is not in the service name: `LLM_MODEL` in `/etc/super-soaker/llm.env` selects the profile, its target GGUF, and its DSpark-Q8_0 drafter. The server runs a single slot because LFM2's short-conv state corrupts under co-batching, and this stack has one caller anyway. It uses q8_0 KV cache, `--cache-reuse 256` for the Home Assistant prefix, and a reasoning budget that keeps thinking bounded.
+**LLM** is `llama-server` pinned at llama.cpp v0.9.0 (the release that adds LFM3 support; LFM3 needs b11960 or newer), built with `GGML_CUDA_FA_ALL_QUANTS`, CUDA graphs, and `GGML_CUDA_NO_VMM` (the Jetson iGPU VMM workaround). The model is not in the service name: `LLM_MODEL` in `/etc/super-soaker/llm.env` selects the profile, its target GGUF, and its speculative mode — a DSpark-Q8_0 drafter for the LFM2.5 profiles, or drafter-free `ngram-mod` for `frontier`. The server runs a single slot because LFM2/LFM3 short-conv state corrupts under co-batching, and this stack has one caller anyway. It uses q8_0 KV cache, `--cache-reuse 256` for the Home Assistant prefix, and a reasoning budget that keeps thinking bounded.
 
 **TTS** is [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) 0.5.0 on a locally built ONNX Runtime 1.22 with the CUDA execution provider. The Wyoming wrapper is vendored into the service directory, based on [nullable-eth/kokoro-wyoming](https://github.com/nullable-eth/kokoro-wyoming). It streams audio at the first sentence boundary, strips markdown, thinking blocks, tool JSON, and stray angle brackets before phonemization, and pre-sizes its CUDA arena with a full 503-phoneme batch at boot so no request can grow it into an OOM. Synthesis is serialized behind a lock; concurrent requests queue instead of fighting over the arena cap.
 

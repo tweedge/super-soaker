@@ -1,0 +1,6 @@
+{"label":"lfm3-QAD-Q4_0-rb160-ngram-5r2","model":"/var/lib/super-soaker/models/LFM3-1.7B-QAD-Q4_0.gguf","alias":"LFM3-1.7B",
+ "ctx":16384,"reps":5,
+ "baseline_used_mb":5133,
+ "peak_used_mb":5342,
+ "server_vmswap_kb":0,
+ "mem_available_kb":2195684}

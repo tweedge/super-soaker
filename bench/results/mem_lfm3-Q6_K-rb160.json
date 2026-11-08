@@ -1,0 +1,6 @@
+{"label":"lfm3-Q6_K-rb160","model":"/var/lib/super-soaker/models/LFM3-1.7B-Q6_K.gguf","alias":"LFM3-1.7B",
+ "ctx":16384,"reps":3,
+ "baseline_used_mb":5325,
+ "peak_used_mb":5515,
+ "server_vmswap_kb":0,
+ "mem_available_kb":2012188}

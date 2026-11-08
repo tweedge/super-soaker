@@ -1,0 +1,447 @@
+{
+  "label": "lfm3-QAD-Q4_0-rb160-nospec-5r-r4",
+  "model": "LFM3-1.7B",
+  "base_url": "http://127.0.0.1:8080",
+  "started": "2026-11-08T10:50:49",
+  "latency": {
+    "runs": [
+      {
+        "run": 0,
+        "cold": false,
+        "ttft_s": 0.245,
+        "total_s": 3.44,
+        "reasoning_chars": 515,
+        "tool_call": null
+      },
+      {
+        "run": 1,
+        "cold": false,
+        "ttft_s": 0.257,
+        "total_s": 3.452,
+        "reasoning_chars": 508,
+        "tool_call": null
+      },
+      {
+        "run": 2,
+        "cold": false,
+        "ttft_s": 0.259,
+        "total_s": 3.47,
+        "reasoning_chars": 504,
+        "tool_call": null
+      },
+      {
+        "run": 3,
+        "cold": false,
+        "ttft_s": 0.254,
+        "total_s": 3.448,
+        "reasoning_chars": 519,
+        "tool_call": null
+      },
+      {
+        "run": 4,
+        "cold": false,
+        "ttft_s": 0.261,
+        "total_s": 3.478,
+        "reasoning_chars": 501,
+        "tool_call": null
+      }
+    ],
+    "warm_ttft_s": 0.255,
+    "cold_ttft_s": null,
+    "total_avg_s": 3.458
+  },
+  "decode": {
+    "words": 21,
+    "total_s": 5.042,
+    "words_per_s": 4.2,
+    "reasoning_chars": 765,
+    "ttft_s": 0.112,
+    "tok_s": 40.338829955007,
+    "plain_completion_tokens": 200
+  },
+  "tool": [
+    {
+      "id": "light_on_room",
+      "utterance": "Turn on the kitchen lights",
+      "reasoning_chars": 114,
+      "content_snip": "",
+      "completion_tokens": 52,
+      "latency_s": 1.96,
+      "tok_s": 40.063158390875024,
+      "tool": "HassTurnOn",
+      "args": {
+        "area": "kitchen"
+      },
+      "pass": true
+    },
+    {
+      "id": "light_off_named",
+      "utterance": "Turn off the desk lamp",
+      "reasoning_chars": 421,
+      "content_snip": "",
+      "completion_tokens": 136,
+      "latency_s": 4.148,
+      "tok_s": 38.92888471340555,
+      "tool": "HassTurnOff",
+      "args": {
+        "name": "desk lamp"
+      },
+      "pass": true
+    },
+    {
+      "id": "light_dim",
+      "utterance": "Dim the living room lights to 40 percent",
+      "reasoning_chars": 168,
+      "content_snip": "",
+      "completion_tokens": 84,
+      "latency_s": 2.807,
+      "tok_s": 38.98069704061366,
+      "tool": "HassLightSet",
+      "args": {
+        "name": "living room lights",
+        "area": "living room",
+        "brightness": 40
+      },
+      "pass": true
+    },
+    {
+      "id": "light_color",
+      "utterance": "Set the bedroom lights to red",
+      "reasoning_chars": 174,
+      "content_snip": "",
+      "completion_tokens": 81,
+      "latency_s": 2.718,
+      "tok_s": 39.262686019244605,
+      "tool": "HassLightSet",
+      "args": {
+        "name": "lights",
+        "area": "bedroom",
+        "color": "red"
+      },
+      "pass": true
+    },
+    {
+      "id": "timer_set",
+      "utterance": "Set a timer for 10 minutes",
+      "reasoning_chars": 115,
+      "content_snip": "",
+      "completion_tokens": 51,
+      "latency_s": 1.952,
+      "tok_s": 39.42754360883461,
+      "tool": "HassStartTimer",
+      "args": {
+        "duration": "10 minutes"
+      },
+      "pass": true
+    },
+    {
+      "id": "timer_cancel",
+      "utterance": "Cancel the pasta timer",
+      "reasoning_chars": 434,
+      "content_snip": "",
+      "completion_tokens": 129,
+      "latency_s": 3.917,
+      "tok_s": 39.52696109311811,
+      "tool": "HassCancelTimer",
+      "args": {
+        "name": "pasta"
+      },
+      "pass": true
+    },
+    {
+      "id": "list_add",
+      "utterance": "Add milk to the shopping list",
+      "reasoning_chars": 133,
+      "content_snip": "",
+      "completion_tokens": 60,
+      "latency_s": 2.177,
+      "tok_s": 39.48096582487448,
+      "tool": "HassListAddItem",
+      "args": {
+        "item": "milk"
+      },
+      "pass": true
+    },
+    {
+      "id": "climate_set",
+      "utterance": "Set the thermostat to 72 degrees",
+      "reasoning_chars": 254,
+      "content_snip": "",
+      "completion_tokens": 79,
+      "latency_s": 2.666,
+      "tok_s": 39.27126627177226,
+      "tool": "HassClimateSetTemperature",
+      "args": {
+        "temperature": 72.0
+      },
+      "pass": true
+    },
+    {
+      "id": "climate_get",
+      "utterance": "What is the temperature in the bedroom?",
+      "reasoning_chars": 147,
+      "content_snip": "",
+      "completion_tokens": 57,
+      "latency_s": 2.074,
+      "tok_s": 39.99348677501092,
+      "tool": "HassClimateGetTemperature",
+      "args": {
+        "area": "bedroom"
+      },
+      "pass": true
+    },
+    {
+      "id": "media_pause",
+      "utterance": "Pause the music",
+      "reasoning_chars": 198,
+      "content_snip": "",
+      "completion_tokens": 60,
+      "latency_s": 2.178,
+      "tok_s": 39.34741970958937,
+      "tool": "HassMediaPause",
+      "args": {},
+      "pass": true
+    },
+    {
+      "id": "media_next",
+      "utterance": "Skip to the next song",
+      "reasoning_chars": 194,
+      "content_snip": "",
+      "completion_tokens": 59,
+      "latency_s": 2.15,
+      "tok_s": 39.37815110075512,
+      "tool": "HassMediaNext",
+      "args": {},
+      "pass": true
+    },
+    {
+      "id": "media_volume",
+      "utterance": "Set the volume to 50 percent",
+      "reasoning_chars": 203,
+      "content_snip": "",
+      "completion_tokens": 76,
+      "latency_s": 2.573,
+      "tok_s": 39.61215998242277,
+      "tool": "HassMediaVolumeSet",
+      "args": {
+        "volume_level": 0.5
+      },
+      "pass": true
+    },
+    {
+      "id": "weather",
+      "utterance": "Will it rain tomorrow?",
+      "reasoning_chars": 579,
+      "content_snip": "Which city or location should I check the forecast for?",
+      "completion_tokens": 143,
+      "latency_s": 4.286,
+      "tok_s": 39.37902057720215,
+      "pass": false,
+      "fail": "no tool call"
+    },
+    {
+      "id": "state_query",
+      "utterance": "Is the front door locked?",
+      "reasoning_chars": 183,
+      "content_snip": "",
+      "completion_tokens": 63,
+      "latency_s": 2.244,
+      "tok_s": 39.59209920502896,
+      "tool": "get_state",
+      "args": {
+        "name": "front door"
+      },
+      "pass": true
+    },
+    {
+      "id": "area_all_off",
+      "utterance": "Turn off everything in the office",
+      "reasoning_chars": 133,
+      "content_snip": "",
+      "completion_tokens": 55,
+      "latency_s": 2.039,
+      "tok_s": 39.42538235319886,
+      "tool": "HassTurnOff",
+      "args": {
+        "area": "office"
+      },
+      "pass": true
+    },
+    {
+      "id": "math_tool",
+      "utterance": "What is 345 times 12?",
+      "reasoning_chars": 104,
+      "content_snip": "",
+      "completion_tokens": 45,
+      "latency_s": 1.799,
+      "tok_s": 39.36926852793831,
+      "tool": "calculate_math",
+      "args": {
+        "expression": "345 * 12"
+      },
+      "pass": true
+    },
+    {
+      "id": "implicit_climate",
+      "utterance": "It is cold in here, warm it up a bit",
+      "reasoning_chars": 706,
+      "content_snip": "",
+      "completion_tokens": 160,
+      "latency_s": 4.712,
+      "tok_s": 39.45812822551586,
+      "pass": false,
+      "fail": "no tool call"
+    },
+    {
+      "id": "no_tool_bye",
+      "utterance": "Thanks, that is all. Goodbye!",
+      "reasoning_chars": 104,
+      "content_snip": "Goodbye! Have a great day!",
+      "completion_tokens": 31,
+      "latency_s": 1.449,
+      "tok_s": 38.99689584709057,
+      "pass": true
+    },
+    {
+      "id": "no_tool_chitchat",
+      "utterance": "Tell me a two sentence story about a robot.",
+      "reasoning_chars": 149,
+      "content_snip": "A small, chrome-plated robot named Zippy woke up one morning to find that the su",
+      "completion_tokens": 160,
+      "latency_s": 4.658,
+      "tok_s": 40.01164615713303,
+      "pass": true
+    },
+    {
+      "id": "no_tool_nonsense",
+      "utterance": "Flurble wibble the gronkus plaz.",
+      "reasoning_chars": 638,
+      "content_snip": "",
+      "completion_tokens": 160,
+      "latency_s": 4.701,
+      "tok_s": 39.48775196724752,
+      "pass": true
+    }
+  ],
+  "tool_acc": 90.0,
+  "quality": [
+    {
+      "id": "capital_france",
+      "utterance": "What is the capital of France?",
+      "reasoning_chars": 308,
+      "n_words": 6,
+      "completion_tokens": 75,
+      "latency_s": 1.954,
+      "tok_s": 40.17400774272566,
+      "text_snip": "The capital of France is Paris.",
+      "pass": true
+    },
+    {
+      "id": "leap_year",
+      "utterance": "How many days are in a leap year?",
+      "reasoning_chars": 184,
+      "n_words": 13,
+      "completion_tokens": 65,
+      "latency_s": 1.685,
+      "tok_s": 40.44123919539627,
+      "text_snip": "A leap year has **366 days**. It includes an extra day, February 29th.",
+      "pass": false,
+      "fail": "13 words > 12"
+    },
+    {
+      "id": "romeo",
+      "utterance": "Who wrote Romeo and Juliet?",
+      "reasoning_chars": 274,
+      "n_words": 6,
+      "completion_tokens": 72,
+      "latency_s": 1.86,
+      "tok_s": 40.347075774649646,
+      "text_snip": "William Shakespeare wrote *Romeo and Juliet*.",
+      "pass": true
+    },
+    {
+      "id": "arithmetic",
+      "utterance": "What is 345 times 12? Answer with just the number.",
+      "reasoning_chars": 190,
+      "n_words": 1,
+      "completion_tokens": 70,
+      "latency_s": 1.875,
+      "tok_s": 39.032160803451575,
+      "text_snip": "4140",
+      "pass": true
+    },
+    {
+      "id": "ocean",
+      "utterance": "What is the largest ocean on Earth?",
+      "reasoning_chars": 250,
+      "n_words": 14,
+      "completion_tokens": 70,
+      "latency_s": 1.786,
+      "tok_s": 40.93512435378863,
+      "text_snip": "The Pacific Ocean is the largest ocean, covering more than 165 million square miles.",
+      "pass": false,
+      "fail": "14 words > 10"
+    },
+    {
+      "id": "boiling",
+      "utterance": "At what temperature does water boil in Celsius?",
+      "reasoning_chars": 523,
+      "n_words": 15,
+      "completion_tokens": 136,
+      "latency_s": 3.487,
+      "tok_s": 39.86853424662794,
+      "text_snip": "At sea level, water boils at **100\u00b0C**. The exact temperature depends on pressure and altitude.",
+      "pass": false,
+      "fail": "15 words > 12"
+    },
+    {
+      "id": "prime",
+      "utterance": "Is 97 a prime number? Answer yes or no.",
+      "reasoning_chars": 546,
+      "n_words": 6,
+      "completion_tokens": 183,
+      "latency_s": 4.61,
+      "tok_s": 40.40457859356546,
+      "text_snip": "Yes, 97 is a prime number.",
+      "pass": true
+    },
+    {
+      "id": "count_r",
+      "utterance": "How many letter r are in the word strawberry? Answer with just a number.",
+      "reasoning_chars": 461,
+      "n_words": 1,
+      "completion_tokens": 175,
+      "latency_s": 4.446,
+      "tok_s": 40.1340014337526,
+      "text_snip": "3",
+      "pass": true
+    },
+    {
+      "id": "joke_brief",
+      "utterance": "Tell me a one sentence joke about smart homes.",
+      "reasoning_chars": 744,
+      "n_words": 17,
+      "completion_tokens": 195,
+      "latency_s": 4.918,
+      "tok_s": 40.2758104105496,
+      "text_snip": "Why did the smart thermostat quit? It got too many connections and couldn't handle the emotional overload.",
+      "pass": true
+    },
+    {
+      "id": "refuse_weather",
+      "utterance": "What will the weather be like on Mars next Tuesday, exactly?",
+      "reasoning_chars": 280,
+      "n_words": 28,
+      "completion_tokens": 92,
+      "latency_s": 2.394,
+      "tok_s": 39.81882870508731,
+      "text_snip": "I don\u2019t have access to future Mars weather forecasts. My knowledge is limited to current events and general info; for sp",
+      "pass": true
+    }
+  ],
+  "quality_acc": 70.0,
+  "reasoning_used": true,
+  "tok_s_mean": 39.7,
+  "tok_s_tool_mean": 39.4,
+  "tok_s_quality_mean": 40.1
+}

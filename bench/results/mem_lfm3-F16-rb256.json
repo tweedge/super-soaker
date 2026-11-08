@@ -1,0 +1,6 @@
+{"label":"lfm3-F16-rb256","model":"/var/lib/super-soaker/models/LFM3-1.7B-F16.gguf","alias":"LFM3-1.7B",
+ "ctx":16384,"reps":3,
+ "baseline_used_mb":6296,
+ "peak_used_mb":7405,
+ "server_vmswap_kb":190300,
+ "mem_available_kb":2741600}

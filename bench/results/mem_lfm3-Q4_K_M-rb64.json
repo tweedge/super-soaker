@@ -1,0 +1,6 @@
+{"label":"lfm3-Q4_K_M-rb64","model":"/var/lib/super-soaker/models/LFM3-1.7B-Q4_K_M.gguf","alias":"LFM3-1.7B",
+ "ctx":16384,"reps":2,
+ "baseline_used_mb":5087,
+ "peak_used_mb":5220,
+ "server_vmswap_kb":0,
+ "mem_available_kb":2313992}

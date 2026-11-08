@@ -54,7 +54,9 @@ The prompt cache (`--cache-reuse 256`) is what keeps the warm path warm. The sta
 
 `bench/ha_benchmark.py` and `bench/ha_battery.json` hold a frozen 30-scenario battery: 20 tool scenarios from the HA Assist API surface (including no-tool negatives that punish over-triggering) and 10 factual/brevity scenarios. Every profile gets identical prompts and `max_tokens`. The battery reports per-scenario decode tok/s from the server, end-to-end latency, tool accuracy, quality accuracy, and brevity.
 
-Archived results are in `bench/results/`: `ha_A`–`ha_C` are the early words/s era, `ha_D` the original 8B, `ha_E`/`ha_F` the 2.6B original and optimized, `ha_G`/`ha_H` the 8B original and optimized, and `ha_I` the 1.2B as shipped. Old result files are never edited.
+Archived results are in `bench/results/`: `ha_A`–`ha_C` are the early words/s era, `ha_D` the original 8B, `ha_E`/`ha_F` the 2.6B original and optimized, `ha_G`/`ha_H` the 8B original and optimized, `ha_I` the 1.2B as shipped, and `ha_lfm3-*` the LFM3-1.7B quant/spec/reasoning sweeps (2026-11). Old result files are never edited.
+
+`bench/profile_battery.sh` is the harness used for the LFM3 sweeps: it starts `llama-server` with exactly `serve.sh`'s flags, refuses to run if a server already owns the port, runs a memory watchdog (kills the server below 80 MB `MemAvailable`), runs N battery reps, and writes a `mem_<label>.json` with peak `MemTotal−MemFree−Cached` and the server's `VmSwap`. `bench/sweep_frontier.sh` drives the quant / spec / reasoning stages on top of it.
 
 "Novel" in the tables below means 12 unique prompts as a free-form speech proxy. "Templated" is an identical-utterance probe: the HA boilerplate ceiling with fixed tool JSON and repeated phrasing. The battery mean is per-scenario decode across all 30 scenarios.
 
@@ -65,8 +67,11 @@ Archived results are in `bench/results/`: `ha_A`–`ha_C` are the early words/s 
 | `fast` | LFM2.5-1.2B-Instruct Q8_0 | ~83 | - | **84.4** | **0.19 s** | **0.49 s** | **85% / 70%** |
 | `balanced` (default) | LFM2.5-2.6B QAD-Q4_0 | **59.9** | **237.6** | 63.2 | 0.32 s | **1.38 s** | 90% / 80% |
 | `thorough` | LFM2.5-8B-A1B UD-IQ2_M | 38.1 | 119 | 41.6 | 0.51 s | 3.60 s | **95–100% / 90%** |
+| `frontier` | LFM3-1.7B QAD-Q4_0 + ngram-mod | ~42 | 75–97 (steady) | 75–97 (steady) | 0.26–0.35 s | 1.6–2.3 s | 85–90% / 80–90% |
 
 The archived 8B runs scored 95–100% tool and 90% quality; the range is battery noise at n=1 per scenario, not a configuration change. tok/s and latency are stable.
+
+`frontier`'s battery mean is not a single number because ngram-mod keeps filling its n-gram table across repeated scenario phrasing: the first rep of a fresh server runs at the no-spec rate (39.6 tok/s) and steady-state reps reach 75.5 / 80.0 / 87.3 / 96.6 tok/s (5-rep run). Novel-prompt decode is ~42 tok/s throughout, unaffected. Accuracy across those five reps was tool 85/90/90/90/85 and quality 90/80/90/90/80 — statistically the same as the no-spec twin (tool 85–95, quality 70–90 across five reps) at ~half the reply time.
 
 The two dense models share one quirk: "turn on the lights" sometimes maps to `HassLightSet` instead of `HassTurnOn`. That is worth a nudge in Home Assistant's own tool descriptions if it shows up in practice; it is not a serving bug.
 
@@ -117,6 +122,65 @@ The stack also carries a local llama.cpp patch, `deps/patches/mmvq-orin-crossove
 | target quant | QAD-Q4_0 | UD-IQ2_M | higher-fidelity targets do not buy acceptance and cost raw speed |
 | `fast` verdict | - | - | plain `draft-dspark`, `n_max` 9, Q8_0 target; 2.99 accepted per step means the native drafter's trained block length wins, and ngram/p-min/p-split/backend sampling were all neutral or worse |
 
+## The LFM3-1.7B hunt (the `frontier` profile)
+
+LFM3-1.7B is Liquid's successor to LFM2.5. It is a 1.73B tri-hybrid: 24 layers made of 13 gated short convolutions, 5 sliding-window attention layers (256-token window) and 6 global attention layers, plus a 128K vocabulary and a 256K-token context ceiling. It is reasoning-on by default, and it needs llama.cpp b11960 or newer — older builds do not know the `lfm3` architecture at all. The repo pin moved from b11552 to llama.cpp **v0.9.0** (`cd959bae99`, build 12110) for this profile. The LFM2.5 rows above were measured on the old binary and were not re-benchmarked; on v0.9.0 all three LFM2.5 profiles still assemble the expected DSpark/ngram-mod command lines and pass their self-tests (`fast`, `balanced`, `thorough` verified 2026-11-08), so the pin bump did not break them, but treat their accuracy/speed table as b11552 measurements.
+
+**There is no DSpark (or DFlash) drafter for LFM3.** LiquidAI publishes DSpark drafts for LFM2.5-1.2B/2.6B/8B-A1B/24B-A2B and VL-3B only, and a Hugging Face search for `LFM3-DSpark` returns nothing. The alternative is the drafter-free `ngram-mod` speculative mode, which llama.cpp enables for any model; it is measured below.
+
+Sampling per Liquid's card (temperature 0.1, top_k 50, repetition_penalty 1.1) is what the battery already uses. Every run below is the frozen battery, `CTX=16384`, q8_0 KV, `--cache-reuse 256`, STT+TTS resident, with `bench/profile_battery.sh`.
+
+### Quant choice
+
+All five official GGUF quants were downloaded and SHA-256-verified against the Hugging Face LFS object ids. Each ran 3 battery reps at reasoning budget 160 (chosen below).
+
+| quant | size | tool acc | quality acc | battery tok/s | peak RAM (stack resident) | swap |
+|---|---|---|---|---|---|---|
+| **QAD-Q4_0** | **1.05 GB** | **93.3%** | **90.0%** | **39.6** | **5.22 GB** | **0** |
+| Q4_K_M | 1.10 GB | 91.7% | 90.0% | 36.9 | 5.28 GB | 0 |
+| Q5_K_M | 1.26 GB | 88.3% | 63.3% | 34.6 | 5.35 GB | 0 |
+| Q6_K | 1.43 GB | 90.0% | 73.3% | 34.0 | 5.52 GB | 0 |
+| Q8_0 | 1.85 GB | 90.0% | 76.7% | 28.7 | 5.97 GB | 0 |
+| F16 | 3.47 GB | — | — | — | 7.41 GB | **190 MB (watchdog kill)** |
+
+The counter-intuitive result repeats from the 8B-A1B hunt: the smallest official quant wins on accuracy *and* speed. QAD-Q4_0 is Liquid's quant-aware distilled build; Q5_K_M's 63% quality is not a quant-cliff but a reasoning-length interaction (below), and Q8_0 is the slowest because larger weights cost more bandwidth at batch 1 on this GPU. F16 does not fit with the voice stack resident: it peaked at 7.41 GB with 190 MB swapped, the memory watchdog killed the server, and every request after that failed with connection-refused. Selection: **QAD-Q4_0**.
+
+### Reasoning budget is the accuracy lever, not the quant
+
+LFM3 always thinks before answering, and its thinking is longer than LFM2.5's. The frozen battery's `max_tokens` is fixed at 160 for tool scenarios and 200 for quality scenarios. If the reasoning budget is at or above those caps, the budget wrap-up never fires, `max_tokens` truncates mid-thought, and the scenario fails with an empty answer. That is exactly what happened at the first-pass budget of 256: quality scores of 60–80% that looked like a quant problem but moved with the budget instead.
+
+Sweeping the budget on QAD-Q4_0:
+
+| reasoning budget | tool acc | quality acc | note |
+|---|---|---|---|
+| 64 | 95 / 90 | 80 / 80 | too short: some reasoning-heavy answers lose their check |
+| 96 | 90 / 90 | 80 / 80 | |
+| 128 | 95 / 95 | 80 / 80 | |
+| **160** | **95 / 90** | **100 / 90** | best: wrap-up fires inside the answer budget |
+| 192 | 90 / 90 | 80 / 80 | budget at the tool cap: `implicit_climate` truncates |
+| 256 | 90–95 | 60–80 | budget above `max_tokens`: answers truncated mid-thought |
+
+The shipped `frontier` default is **160**. Note this is a property of the battery's `max_tokens`, not of Home Assistant: a real HA request that allows a longer answer can use a larger budget. It is the same trade the LFM2.5 profiles make with 256, adjusted for LFM3's longer drafts.
+
+### ngram-mod speculative decoding
+
+With no drafter available, `ngram-mod` is the only speculative mode. It is quality-neutral (verified distributions are unchanged) and it pays off on Home Assistant's templated tool traffic: repeated tool JSON and phrasing become draftable n-grams.
+
+| config | tool acc (5 reps) | quality acc (5 reps) | battery tok/s | average reply | novel tok/s |
+|---|---|---|---|---|---|
+| QAD-Q4_0, budget 160, no spec | 85/90/95/90/90 | 90/70/90/70/80 | 39.7 flat | 3.46–3.57 s | ~40 |
+| **QAD-Q4_0, budget 160, ngram-mod n-max 7** | **85/90/90/90/85** | **90/80/90/90/80** | **39.6 → 75.5 → 80.0 → 87.3 → 96.6** | **1.56–2.32 s** | **~42** |
+
+The first rep after a restart runs at the no-spec rate while the n-gram table fills; steady-state replies are ~2× faster. Accuracy is statistically indistinguishable between the two rows at n=5. `frontier` ships with `ngram-mod` on by default. `SPEC=off` in `llm.env` reverts to the non-speculative path, and `SPEC_TYPE`/`SPEC_N_MAX` are honoured as for the other profiles.
+
+### Frontier power
+
+`tegrastats` `VDD_IN` at 0.5 s during the 5-rep ngram run: min 4.80 W, median 16.49 W, p95 17.32 W, max 17.47 W — the same envelope as the other profiles (whole-board, `MAXN_SUPER`, clocks un-pinned).
+
+### Why `frontier` is not the default
+
+It ties or beats `balanced` on accuracy and its steady-state speed is excellent, but its *cold* reply (first request after a restart, before n-gram tables fill, and with a cold prompt cache) is slower than `balanced`'s, and its reasoning pass makes worst-case replies less predictable. `balanced` remains the default for a voice assistant; `frontier` is the profile to choose when the newest Liquid model's higher ceiling matters more than a predictable floor. This node is left running `frontier` (`LLM_MODEL=frontier` in `llm.env`) because that is the model this work was asked to install and validate; switching back is one `sudo ./bootstrap.sh --model balanced`.
+
 ## The 8B-A1B quant hunt
 
 The 8B-A1B is 8.3B total parameters and 1.5B active (MoE: 32 experts, 4 active per token; gated short-conv LFM2 hybrid; reasoning-only). Total parameters drive RAM, active parameters drive speed. That makes it fast for its size, but it still needs its whole quant resident alongside STT and TTS.
@@ -143,14 +207,18 @@ All figures are `MemTotal − MemFree − Cached` deltas with the stack resident
 | LLM `fast` (llama.cpp + nvgpu pool) | ~2.6 GB | flat under load |
 | LLM `balanced` | ~3.0 GB | flat under load |
 | LLM `thorough` (UD-IQ2_M + DSpark) | ~4.3 GB | ~4.8 GB |
+| LLM `frontier` (LFM3-1.7B QAD-Q4_0, no drafter) | ~1.0 GB | flat under load |
 | STT (Whisper tiny/en int8) | ~0.7 GB | flat |
 | TTS (Kokoro fp16, ONNX CUDA; arena pre-sized) | ~1.3 GB | ~1.3 GB (high-water reached at boot) |
 | OS (headless) | ~0.8 GB | - |
 | **total, `balanced`** | **~5.6 / 7.4 GB** | **~6.2 / 7.4 GB** |
 | **total, `fast`** | **~5.2 / 7.4 GB** | **~5.6 / 7.4 GB** |
 | **total, `thorough`** | **~6.9 / 7.4 GB** | **~7.0 / 7.4 GB** |
+| **total, `frontier`** | **~5.3 / 7.4 GB** | **~5.3 / 7.4 GB** |
 
-That is roughly 1.2 GB of headroom at peak on `balanced` (~1.8 GB on `fast`) and ~0.5 GB on `thorough`. The measured `thorough` peak was 7.04 / 7.62 GB with zero swap. Every service pins `MemorySwapMax=0` and the system sets `vm.swappiness=10`, so "is anything swapped?" should be *no* by construction.
+That is roughly 1.2 GB of headroom at peak on `balanced` (~1.8 GB on `fast`), ~0.5 GB on `thorough`, and ~2.1 GB on `frontier`. The `frontier` figure is measured (not estimated) with STT and TTS resident: 5.13 GB after model load, 5.34 GB peak across five battery reps, server `VmSwap` 0. LFM3-1.7B is simply a small model — its QAD-Q4_0 weights are 1.05 GB — so it is the roomiest profile despite carrying more capable weights than `balanced`.
+
+F16 does **not** fit: with STT+TTS resident it peaked at 7.41 / 7.4 GB with 190 MB of server swap, the watchdog killed it, and every battery request then failed with connection-refused. That is the same failure class as the 8B-A1B Q4_0 attempt. Q8_0 fits (5.97 GB peak, zero swap) but is slower than every smaller quant on Orin, so it was not selected. The measured `thorough` peak was 7.04 / 7.62 GB with zero swap. Every service pins `MemorySwapMax=0` and the system sets `vm.swappiness=10`, so "is anything swapped?" should be *no* by construction.
 
 On 2026-10-17 the TTS began sizing its CUDA arena at service start with a full-size 503-phoneme batch. Before that, the arena high-water (~0.87 GB) grew on the first long answer, and that growth was what pushed the board into a global OOM mid-request. Measured after the change on `balanced`, TTS nvmap is flat at ~1.2 GB across 8- to 99-word requests and full-size batches, with zero swap. Long answers no longer need mid-request headroom, but the steady-state free figure is now ~0.2–0.8 GB depending on page-cache state (88–207 MB free, 0.3–0.9 GB reclaimable cache) rather than the ~1.2 GB implied by the older peak numbers above.
 

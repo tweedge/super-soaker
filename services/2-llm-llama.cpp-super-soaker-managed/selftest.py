@@ -192,14 +192,17 @@ def main():
             },
         },
     }]
-    # 4a. forced tool_choice: validates the tool-call plumbing end to end
+    # 4a. forced tool_choice: validates the tool-call plumbing end to end.
+    # llama.cpp >= v0.9.0 only accepts the OpenAI *string* forms ("auto",
+    # "none", "required"); the old object form ({"type":"function",...}) is
+    # rejected and silently downgraded to "auto", which would make this probe
+    # pass without exercising forced selection at all.
     run, _ = chat_once(
         [{"role": "system",
           "content": "You are a home assistant. Use the provided tools."},
          {"role": "user", "content": "Turn on the kitchen light."}],
         "tool_call_forced", stream=False, tools=tools, max_tokens=384,
-        tool_choice={"type": "function",
-                     "function": {"name": "turn_on_light"}})
+        tool_choice="required")
     if run is not None:
         if not run.get("tool_calls"):
             fail("forced tool_choice produced no tool_calls")

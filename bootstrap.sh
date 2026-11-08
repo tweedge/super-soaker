@@ -19,11 +19,13 @@
 #   --no-reboot    do not reboot at the end (services start anyway)
 #   --force-jobs   allow JOBS>2 (dangerous on 8 GB devices — see below)
 #
-#   --model {fast|balanced|thorough}      default balanced
+#   --model {fast|balanced|thorough|frontier}   default balanced
 #                                         fast      = LFM2.5-1.2B-Instruct, no
 #                                                     reasoning (lowest latency)
 #                                         balanced  = LFM2.5-2.6B + reasoning
 #                                         thorough  = LFM2.5-8B-A1B MoE + reasoning
+#                                         frontier  = LFM3-1.7B (newest Liquid
+#                                                     model) + reasoning
 #   --reasoning-budget {N|off|on|auto}    thinking token budget; N caps
 #                                         thinking at N tokens (0 = off).
 #                                         Defaults per model: 0 for fast,
@@ -71,7 +73,7 @@ while [ $# -gt 0 ]; do
         --no-reboot)   DO_REBOOT=0 ;;
         --force-jobs)  FORCE_JOBS=1 ;;
         --model)       if [ $# -lt 2 ]; then
-                           echo "--model requires a value: fast, balanced, or thorough" >&2
+                           echo "--model requires a value: fast, balanced, thorough, or frontier" >&2
                            exit 2
                        fi
                        LLM_MODEL="$2"; shift ;;
@@ -89,8 +91,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$LLM_MODEL" in
-    ""|fast|balanced|thorough) ;;
-    *) die "unknown --model '$LLM_MODEL' (fast | balanced | thorough)" ;;
+    ""|fast|balanced|thorough|frontier) ;;
+    *) die "unknown --model '$LLM_MODEL' (fast | balanced | thorough | frontier)" ;;
 esac
 if [ -n "$REASONING_BUDGET_ARG" ]; then
     case "$REASONING_BUDGET_ARG" in
@@ -161,7 +163,7 @@ chown -R "${SERVICE_USER}:${SERVICE_USER}" /var/lib/super-soaker
 if [ "${SKIP_BUILD}" = "1" ]; then
     log "--skip-build: reusing ${CACHE_DIR}"
 else
-    log "building llama.cpp (pinned b11552 / 23b0202a1), CTranslate2 4.5.0, ONNX Runtime 1.22.0"
+    log "building llama.cpp (pinned v0.9.0 / cd959bae99), CTranslate2 4.5.0, ONNX Runtime 1.22.0"
     log "  JOBS=${JOBS} — this takes a WHILE at 1-2 threads (1-2 h total); it is"
     log "  RAM-critical on the 8 GB box, so do not raise JOBS past 2 without"
     log "  --force-jobs on a 16 GB device (see deps/limit-jobs.sh)"
@@ -244,8 +246,8 @@ case "$EFF_MODEL" in
 esac
 EFF_MODEL="${EFF_MODEL:-balanced}"
 case "$EFF_MODEL" in
-    fast|balanced|thorough) ;;
-    *) die "unknown LLM_MODEL '$EFF_MODEL' in ${LLM_ENV} (valid profiles: fast | balanced | thorough)" ;;
+    fast|balanced|thorough|frontier) ;;
+    *) die "unknown LLM_MODEL '$EFF_MODEL' in ${LLM_ENV} (valid profiles: fast | balanced | thorough | frontier)" ;;
 esac
 
 case "$EFF_MODEL" in
@@ -269,6 +271,17 @@ case "$EFF_MODEL" in
     fetch "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-DSpark-GGUF/resolve/main/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
           "${MODEL_DIR}/LFM2.5-8B-A1B-DSpark-Q8_0.gguf" \
           "78c6edb3ec97d54fa2e6ec1ba44c394db0a1ae62fcd854d2193389c1295e0a6d"
+    ;;
+  frontier)
+    log "  LLM: LFM3-1.7B QAD-Q4_0 (frontier profile)"
+    # LFM3-1.7B is Liquid's tri-hybrid text model (24 layers: 13 gated short
+    # convs, 5 sliding-window + 6 global attention), 256K-context capable and
+    # reasoning-on by default. QAD-Q4_0 is LiquidAI's official quant-aware
+    # 4-bit build and measured best on the frozen battery; there is no LFM3
+    # DSpark drafter, so this profile has no draft file.
+    fetch "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf" \
+          "${MODEL_DIR}/LFM3-1.7B-QAD-Q4_0.gguf" \
+          "43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452"
     ;;
   fast)
     log "  LLM: LFM2.5-1.2B-Instruct Q8_0 (fast profile)"
@@ -335,8 +348,10 @@ write_env() {
 # model fetch above) is the effective profile.
 # sensible thinking-budget defaults per model
 case "$EFF_MODEL" in
-    fast) DEFAULT_BUDGET=0 ;;      # no reasoning in this profile
-    *)    DEFAULT_BUDGET=256 ;;    # balanced / thorough
+    fast)     DEFAULT_BUDGET=0 ;;    # no reasoning in this profile
+    frontier) DEFAULT_BUDGET=160 ;;  # LFM3 always thinks; 160 lands the
+                                     # wrap-up inside a voice-length answer
+    *)        DEFAULT_BUDGET=256 ;;  # balanced / thorough
 esac
 if [ -f "$LLM_ENV" ]; then
     cur_model=$(grep -E "^LLM_MODEL=" "$LLM_ENV" | head -1 | cut -d= -f2 || true)

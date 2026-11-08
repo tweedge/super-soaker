@@ -1,0 +1,220 @@
+{
+  "label": "lfm3-QAD-Q4_0-rb160-ngram-5r-r4",
+  "model": "LFM3-1.7B",
+  "base_url": "http://127.0.0.1:8080",
+  "started": "2026-11-08T10:45:18",
+  "latency": {
+    "runs": [
+      {
+        "run": 0,
+        "error": "<urlopen error [Errno 111] Connection refused>"
+      },
+      {
+        "run": 1,
+        "error": "<urlopen error [Errno 111] Connection refused>"
+      },
+      {
+        "run": 2,
+        "error": "<urlopen error [Errno 111] Connection refused>"
+      },
+      {
+        "run": 3,
+        "error": "<urlopen error [Errno 111] Connection refused>"
+      },
+      {
+        "run": 4,
+        "error": "<urlopen error [Errno 111] Connection refused>"
+      }
+    ]
+  },
+  "decode": {
+    "error": "<urlopen error [Errno 111] Connection refused>"
+  },
+  "tool": [
+    {
+      "id": "light_on_room",
+      "utterance": "Turn on the kitchen lights",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "light_off_named",
+      "utterance": "Turn off the desk lamp",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "light_dim",
+      "utterance": "Dim the living room lights to 40 percent",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "light_color",
+      "utterance": "Set the bedroom lights to red",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "timer_set",
+      "utterance": "Set a timer for 10 minutes",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "timer_cancel",
+      "utterance": "Cancel the pasta timer",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "list_add",
+      "utterance": "Add milk to the shopping list",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "climate_set",
+      "utterance": "Set the thermostat to 72 degrees",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "climate_get",
+      "utterance": "What is the temperature in the bedroom?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "media_pause",
+      "utterance": "Pause the music",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "media_next",
+      "utterance": "Skip to the next song",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "media_volume",
+      "utterance": "Set the volume to 50 percent",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "weather",
+      "utterance": "Will it rain tomorrow?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "state_query",
+      "utterance": "Is the front door locked?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "area_all_off",
+      "utterance": "Turn off everything in the office",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "math_tool",
+      "utterance": "What is 345 times 12?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "implicit_climate",
+      "utterance": "It is cold in here, warm it up a bit",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "no_tool_bye",
+      "utterance": "Thanks, that is all. Goodbye!",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "no_tool_chitchat",
+      "utterance": "Tell me a two sentence story about a robot.",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "no_tool_nonsense",
+      "utterance": "Flurble wibble the gronkus plaz.",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    }
+  ],
+  "tool_acc": 0.0,
+  "quality": [
+    {
+      "id": "capital_france",
+      "utterance": "What is the capital of France?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "leap_year",
+      "utterance": "How many days are in a leap year?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "romeo",
+      "utterance": "Who wrote Romeo and Juliet?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "arithmetic",
+      "utterance": "What is 345 times 12? Answer with just the number.",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "ocean",
+      "utterance": "What is the largest ocean on Earth?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "boiling",
+      "utterance": "At what temperature does water boil in Celsius?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "prime",
+      "utterance": "Is 97 a prime number? Answer yes or no.",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "count_r",
+      "utterance": "How many letter r are in the word strawberry? Answer with just a number.",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "joke_brief",
+      "utterance": "Tell me a one sentence joke about smart homes.",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    },
+    {
+      "id": "refuse_weather",
+      "utterance": "What will the weather be like on Mars next Tuesday, exactly?",
+      "pass": false,
+      "fail": "error: <urlopen error [Errno 111] Connection refused>"
+    }
+  ],
+  "quality_acc": 0.0,
+  "reasoning_used": false
+}
